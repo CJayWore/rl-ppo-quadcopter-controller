@@ -1,0 +1,135 @@
+@article{TAGAY2021242,
+title = {Development of control algorithm for a quadcopter},
+journal = {Procedia Computer Science},
+volume = {179},
+pages = {242-251},
+year = {2021},
+note = {5th International Conference on Computer Science and Computational Intelligence 2020},
+issn = {1877-0509},
+doi = {https://doi.org/10.1016/j.procs.2021.01.003},
+url = {https://www.sciencedirect.com/science/article/pii/S1877050921000041},
+author = {Adilet Tagay and Abylkaiyr Omar and Md. Hazrat Ali},
+keywords = {drone, UAV, quadcopter},
+abstract = {Nowadays, drones are popular with their multipurpose functioning. They can be applied in different environments, especially those that are harmful and can cause health hazards to the human being. However, drones are expensive, have limitations in the lifting capabilities, difficult in control, and auto-balancing. This paper focuses on deriving a mathematical model of the quadcopter with its characteristic properties to solve the auto-balancing problem. The research determines the mathematical model of the unmanned aerial vehicles (UAV) and then incorporates characteristic values of the constructed model (Ixx, τthrust and etc.) to the general model. The derived equation is used in identifying the controlling parameters of the quadcopter. The key focus of this research is to develop a cost-effective, self-stabilizing, and robust control system using affordable components. A gyroscope MPU6050, a transmitter, and a receiver (with at least 4 inputs) were integrated with microcontrollers to develop the system.}
+}
+
+@article{abdelkhalek2015attitude,
+  title={Attitude stability of quadcopter using classic control with angular acceleration},
+  author={Abdelkhalek, Mohamed A and El-Demerdash, Mohamed S and El-Tahan, Ahmed A and Dief, Tarek N},
+  journal={International Journal of Computer Science and Information Technology and Security},
+  volume={5},
+  number={4},
+  pages={325--331},
+  year={2015}
+}
+
+@article{Jiang2020,
+  author={Jiang, Fan and Pourpanah, Farhad and Hao, Qi},
+  journal={IEEE Transactions on Industrial Electronics}, 
+  title={Design, Implementation, and Evaluation of a Neural-Network-Based Quadcopter UAV System}, 
+  year={2020},
+  volume={67},
+  number={3},
+  pages={2076-2085},
+  keywords={Adaptation models;Computational modeling;Control systems;Neural networks;Rotors;Force;Uncertainty;Unmanned aerial vehicles (UAVs);control systems;neural network applications},
+  doi={10.1109/TIE.2019.2905808}
+}
+
+
+@article{el2019neural,
+  title={Neural network and fuzzy-logic-based self-tuning PID control for quadcopter path tracking},
+  author={El Hamidi, Khadija and Mjahed, Mostafa and El Kari, Abdeljalil and Ayad, Hassan},
+  journal={Stud. Inform. Control},
+  volume={28},
+  number={4},
+  pages={401--412},
+  year={2019}
+}
+
+@article{praveen2016modeling,
+  title={Modeling and simulation of quadcopter using PID controller},
+  author={Praveen, Viswanadhapalli and Pillai, S and others},
+  journal={International Journal of Control Theory and Applications},
+  volume={9},
+  number={15},
+  pages={7151--7158},
+  year={2016}
+}
+
+ @article{article_507222, title={Dynamic Modeling and Simulation of Quadcopter for Several Flight Conditions}, journal={Avrupa Bilim ve Teknoloji Dergisi}, pages={132–142}, year={2019}, DOI={10.31590/ejosat.507222}, author={Oktay, Tuğrul and Köse, Oğuz}, keywords={quadcopter,quadrotor,uav,zankacopter,PID,durum uzay modeli,kontrol}, abstract={<p class="MsoNormal" style="margin-bottom:.0001pt;text-align:justify;line-height:normal;"> <span lang="en-us" style="font-size:10pt;font-family:’Times New Roman’, serif;" xml:lang="en-us">In this paper, a
+four-rotor unmanned aerial vehicle was modeled, a control system was designed
+and performance evaluations were made. For the control system, a separate
+mathematical model of the unmanned aerial vehicle longitudinal, lateral and
+vertical take-off and landing operations is omitted and is expressed as a state
+space model. The mathematical model of the wind disturbances that will affect
+the unmanned aerial vehicle during the flight was created and the situation was
+added to the space model. Proportional Integral Derivative (PID) control
+algorithm was used as the control. Unmanned aerial vehicle modeling was done in
+Solidworks and simulations were done in Matlab / Simulink program. This paper is one of rare studies that source
+on quadcopter modeling and control. In the next part of this study, Zankacopter
+name will be used instead of quadcopter or quadrotor.  </span> <span style="font-size:10pt;font-family:’Times New Roman’, serif;"> </span> </p> <p> </p>}, number={15}, publisher={Osman SAĞDIÇ} }
+
+@article{pairan2020neural,
+  title={Neural network based system identification for quadcopter dynamic modelling: A review},
+  author={Pairan, Mohammad Fahmi and Shamsudin, Syariful Syafiq and Zulkafli, Mohd Fadhli},
+  journal={Journal of Advanced Mechanical Engineering Applications},
+  volume={1},
+  number={2},
+  pages={20--33},
+  year={2020}
+}
+
+@article{FEREDE2024104588,
+title = {End-to-end neural network based optimal quadcopter control},
+journal = {Robotics and Autonomous Systems},
+volume = {172},
+pages = {104588},
+year = {2024},
+issn = {0921-8890},
+doi = {https://doi.org/10.1016/j.robot.2023.104588},
+url = {https://www.sciencedirect.com/science/article/pii/S0921889023002270},
+author = {Robin Ferede and Guido {de Croon} and Christophe {De Wagter} and Dario Izzo},
+keywords = {End-to-end control, Optimal control, Supervised learning, G&CNet, Reality gap, Sim-to-real transfer},
+abstract = {Developing optimal controllers for aggressive high-speed quadcopter flight poses significant challenges in robotics. Recent trends in the field involve utilizing neural network controllers trained through supervised or reinforcement learning. However, the sim-to-real transfer introduces a reality gap, requiring the use of robust inner loop controllers during real flights, which limits the network’s control authority and flight performance. In this paper, we investigate for the first time, an end-to-end neural network controller, addressing the reality gap issue without being restricted by an inner-loop controller. The networks, referred to as G&CNets, are trained to learn an energy-optimal policy mapping the quadcopter’s state to rpm commands using an optimal trajectory dataset. In hover-to-hover flights, we identified the unmodeled moments as a significant contributor to the reality gap. To mitigate this, we propose an adaptive control strategy that works by learning from optimal trajectories of a system affected by constant external pitch, roll and yaw moments. In real test flights, this model mismatch is estimated onboard and fed to the network to obtain the optimal rpm command. We demonstrate the effectiveness of our method by performing energy-optimal hover-to-hover flights with and without moment feedback. Finally, we compare the adaptive controller to a state-of-the-art differential-flatness-based controller in a consecutive waypoint flight and demonstrate the advantages of our method in terms of energy optimality and robustness.}
+}
+
+@misc{CE801L4,
+  author       = {Hani Hagras},
+  title        = {Robot Control},
+  year         = {{n.d.}},
+  howpublished = {Lecture slides, University of Essex},
+  note         = {Course: CE801-Intelligent Systems and Robotics.},
+}
+
+@INPROCEEDINGS{7873567,
+  author={Santoso, Fendy and Garratt, Matthew A. and Anavatti, Sreenatha G.},
+  booktitle={2016 International Conference on Sustainable Energy Engineering and Application (ICSEEA)}, 
+  title={Adaptive Neuro-Fuzzy Inference System identification for the dynamics of the AR.Drone Quadcopter}, 
+  year={2016},
+  volume={},
+  number={},
+  pages={55-60},
+  keywords={Adaptation models;Drones;Transfer functions;Mathematical model;Adaptive systems;MIMO;Fuzzy logic;Adaptive Neuro-Fuzzy;System Identification;the AR.Drone Quadcopter},
+  doi={10.1109/ICSEEA.2016.7873567}}
+
+@article{karaboga2019adaptive,
+  title={Adaptive network based fuzzy inference system (ANFIS) training approaches: a comprehensive survey},
+  author={Karaboga, Dervis and Kaya, Ebubekir},
+  journal={Artificial Intelligence Review},
+  volume={52},
+  pages={2263--2293},
+  year={2019},
+  publisher={Springer}
+}
+
+@ARTICLE{256541,
+  author={Jang, J.-S.R.},
+  journal={IEEE Transactions on Systems, Man, and Cybernetics}, 
+  title={ANFIS: adaptive-network-based fuzzy inference system}, 
+  year={1993},
+  volume={23},
+  number={3},
+  pages={665-685},
+  keywords={Fuzzy systems;Fuzzy neural networks;Predictive models;Automatic control;Adaptive systems;Humans;Control system synthesis;Nonlinear control systems;Chaos;Artificial neural networks},
+  doi={10.1109/21.256541}}
+
