@@ -84,8 +84,8 @@ def get_target_reward(task, act_type):
         return 400.0
     elif task == "obstacle":
         return 300.0
-    elif task == "unified":  # 新增统一任务的目标奖励
-        return 500.0
+    elif task == "unified":  
+        return 50000.0
     else:
         return 300.0
 
