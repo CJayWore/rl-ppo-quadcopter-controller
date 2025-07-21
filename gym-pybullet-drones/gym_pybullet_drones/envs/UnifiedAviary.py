@@ -1,3 +1,4 @@
+import dis
 import numpy as np
 import pybullet as p
 import time
@@ -299,106 +300,201 @@ class UnifiedAviary(BaseRLAviary):
         - 添加高斯noise扰动
 
     '''
-    def _computeReward(self):
+    def _navigationReward(self):
+        state = self._getDroneStateVector(0)
+        current_pos = state[0:3]
+        position_error = self.TARGET_POS - current_pos
+        current_distance = np.linalg.norm(position_error)
+
+        distance_reward = 0
+        if current_distance >0.1:
+            distance_reward = 100/(1e-6 + current_distance)
+        else:
+            distance_reward = 500 # Arrive at target with high reward
+
+        # if current_distance >= 4.0:
+        #     distance_reward = 100/(current_distance)  # 基于距离的奖励，距离越近奖励越高
+        # else:
+        #     distance_reward = np.exp(-distance_reward) * 100  # 距离小于4时，使用指数衰减奖励
+        # distance_reward = -10 * (1 - np.exp(-0.1 * current_distance**2))
+        approaching_reward = (self.last_distance_to_target - current_distance) * 100.0
+        self.last_distance_to_target = current_distance
+
+        # postion_precision_reward = 0
+        k = 1.0
+        x_penalty = 1.0-np.tanh(k * abs(position_error[0]))
+        y_penalty = 1.0-np.tanh(k * abs(position_error[1]))
+        z_penalty = 1.0-np.tanh(k * abs(position_error[2]))
+        
+        # 给Z轴稍高权重但不过分
+        position_precision_reward = (x_penalty + y_penalty + z_penalty) * 10
+
+        height_safety_reward = 0
+        if current_pos[2] < 0.3:  # 危险低高度
+            height_safety_reward = -50.0 * (0.3 - current_pos[2])
+        elif current_pos[2] > 0.5:  # 安全高度
+            height_safety_reward = 2.0
+
+        navigation_reward = (
+            distance_reward
+            + approaching_reward
+            + position_precision_reward
+            + height_safety_reward
+            )
+        
+        return navigation_reward, {
+            'distance_reward': distance_reward,
+            'approaching_reward': approaching_reward,
+            'position_precision_reward': position_precision_reward,
+            'height_safety_reward': height_safety_reward,
+            'x_penalty': x_penalty,
+            'y_penalty': y_penalty,
+            'z_penalty': z_penalty
+        }
+    
+    def _stabilityPenalty(self):
+        state = self._getDroneStateVector(0)
+        # current_pos = state[0:3]
+        quaternion = state[3:7]  # 四元数表示的姿态
+        rpy = state[7:10]
+        current_vel = state[10:13]
+        angular_vel = state[13:16]  # angular velocity
+        last_action = state[16:20]  # last action (RPMs)
+
+        # 姿态稳定性
+        max_tilt = np.pi/12  # 15度作为参考
+        roll_stability = max(0, 10.0 * (1.0 - abs(rpy[0]) / max_tilt))
+        pitch_stability = max(0, 10.0 * (1.0 - abs(rpy[1]) / max_tilt))
+        attitude_penalty = roll_stability + pitch_stability
+
+
+        angular_velocity_penalty = -0.5 * np.linalg.norm(angular_vel)
+        # linear_velocity_penalty = -0.5 * (current_vel[0]**2 + current_vel[1]**2 + current_vel[2]**2)
+        
+        # RPM smoothness penalty using available last_action
+        rpm_smoothness_penalty = -0.1 * np.var(last_action) / (np.mean(last_action) + 1e-6)  # normalized by mean RPM
+
+        stability_penalty = (
+            attitude_penalty +
+            angular_velocity_penalty 
+            # rpm_smoothness_penalty
+        )
+
+        return stability_penalty, {
+            'attitude_penalty': attitude_penalty,
+            'angular_velocity_penalty': angular_velocity_penalty,
+            'rpm_smoothness_penalty': rpm_smoothness_penalty,
+            'rpy': rpy,
+            'angular_vel_norm': np.linalg.norm(angular_vel)
+        }
+
+    def _hoveringReward(self):
         state = self._getDroneStateVector(0)
         current_pos = state[0:3]
         current_vel = state[10:13]
-        rpy = state[7:10]  # roll, pitch, yaw
-        angular_vel = state[13:16]  # angular velocity
         
-        self._update_hover_timer(current_pos)
-        total_reward = 0.0
-        
-        # Navigation reward - based on distance to target
-        position_error = self.TARGET_POS - current_pos
-        current_distance = np.linalg.norm(position_error)
-        # 这个权重在距离为0时为1，在距离很大时接近0。
-        precision_weight = np.exp(-0.5 * current_distance)
-
-        # 它与任务的绝对尺度无关，无论目标在10米外还是1000米外，其表现都一样。
-        # 当无人机在起点时，奖励为0；在目标点时，奖励为20。
-        # distance_reward = 200.0 * (1 - current_distance / self.initial_distance)
-        # distance_reward = max(distance_reward, 0.0)
-
-        # TODO：设计一个和distance负相关的奖励函数，且需要满足distance很大的时候reward不会变得太小
-        distance_reward = -current_distance * precision_weight * 10.0
-
-
-        approaching_reward = (self.last_distance_to_target - current_distance) * 15.0
-        self.last_distance_to_target = current_distance
-        
-        #    添加一个很小的数 epsilon 来防止除以零。
-        epsilon = 1e-6
-        normalized_error_x = abs(position_error[0]) / (self.initial_distance + epsilon)
-        normalized_error_y = abs(position_error[1]) / (self.initial_distance + epsilon)
-        normalized_error_z = abs(position_error[2]) / (self.initial_distance + epsilon)
-        # precision_factor = 1.0    # 越近系数越大
-        decay_coefficient = 5.0 # 衰减系数，可以调整
-        
-        x_precision = -normalized_error_x 
-        y_precision = -normalized_error_y
-        z_precision = -normalized_error_z * 9
-
-        position_precision_reward = (x_precision + y_precision + z_precision)
+        # 悬停稳定性奖励 - 接近目标时奖励低速度
+        speed_reward = 0
+        if np.linalg.norm(current_pos - self.TARGET_POS) < self.HOVER_THRESHOLD:
+            speed_reward = 5.0 * np.exp(-np.linalg.norm(current_vel))
 
         
-        # Obstacle avoidance penalty
+        # 悬停时间奖励 - 在目标附近停留的时间
+        hover_time_reward = 0
+        if np.linalg.norm(current_pos - self.TARGET_POS) < self.HOVER_THRESHOLD:
+            hover_time_reward = self.time_at_target * 20.0
+        
+        hovering_reward = speed_reward + hover_time_reward
+
+        return hovering_reward, {
+            'speed_reward': speed_reward,
+            'hover_time_reward': hover_time_reward,
+            'velocity_norm': np.linalg.norm(current_vel),
+            'distance_to_target': np.linalg.norm(current_pos - self.TARGET_POS),
+            'in_hover_zone': np.linalg.norm(current_pos - self.TARGET_POS) < self.HOVER_THRESHOLD
+        }
+
+    def _obstacleAvoidanceReward(self):
+        state = self._getDroneStateVector(0)
+        current_pos = state[0:3]
+        
         obstacle_penalty = 0
         if self.ENABLE_OBSTACLES and len(self.obstacle_positions) > 0:
             critical_distance = self.OBSTACLE_RADIUS + 0.3
             for obs_pos in self.obstacle_positions:
                 dist_to_obstacle = np.linalg.norm(current_pos - obs_pos)
                 if dist_to_obstacle < critical_distance:
+                    # 使用指数函数创建强烈的避障信号
                     penalty_factor = np.exp(-(dist_to_obstacle - self.OBSTACLE_RADIUS) * 5.0)
                     obstacle_penalty -= 10.0 * penalty_factor
+                    
+                    # 如果非常接近障碍物，给予额外的强烈惩罚
                     if dist_to_obstacle < self.OBSTACLE_RADIUS + 0.05:
                         obstacle_penalty -= 100.0
-
-        # 4. 悬停稳定性奖励 - 接近目标时奖励低速度
-        stability_reward = 0
-        if current_distance < self.HOVER_THRESHOLD:
-            stability_reward = precision_weight * 5.0 * np.exp(-np.linalg.norm(current_vel))
-
         
-        # 姿态稳定性
-        attitude_penalty = -0.5 * (rpy[0]**2 + rpy[1]**2)
-        angular_velocity_penalty = -10.0 * np.linalg.norm(angular_vel)
-        
-        # 5. 悬停时间奖励 - 在目标附近停留的时间
-        hover_time_reward = 0
-        if current_distance < self.HOVER_THRESHOLD:
-            hover_time_reward = self.time_at_target * 20.0
+        return obstacle_penalty
+    
 
-        # 8. 任务完成奖励
+    def _computeReward(self):
+        state = self._getDroneStateVector(0)
+        current_pos = state[0:3]
+        current_vel = state[10:13]
+        current_distance = np.linalg.norm(self.TARGET_POS - current_pos)
+
+        # 计算各个奖励组件
+        navigation_reward, nav_details = self._navigationReward()
+        stability_reward, stab_details = self._stabilityPenalty()
+        hovering_reward, hover_details = self._hoveringReward()
+        obstacle_reward = self._obstacleAvoidanceReward()
+        
+        
+        # 任务完成奖励
+        survival_reward = 1.0
         completion_reward = 0
         if self.time_at_target >= self.required_hover_time:
             completion_reward = 500.0
 
         total_reward = (
-            # distance_reward +
-            # approaching_reward +
-            position_precision_reward +
+            navigation_reward +
             stability_reward +
-            hover_time_reward +
-            # attitude_penalty +
-            angular_velocity_penalty +
-            # obstacle_penalty
-            completion_reward
+            # hovering_reward +
+            # obstacle_reward +
+            completion_reward +
+            survival_reward
         )
 
+        # 详细调试输出
         if self.step_counter % 100 == 0:
             obstacle_info = f", Obstacles: {len(self.obstacle_positions)}" if self.ENABLE_OBSTACLES else ", No obstacles"
-            print(f"\nDebug---------------------------------------------- , "
+            print(f"\n--------------------Environments-------------------- "
                   f"\nTarget: {self.TARGET_POS}, \nDrone Pos: {current_pos}, "
                   f"\nDistance: {current_distance:.3f},"
                   f"Speed: {np.linalg.norm(current_vel):.2f}, "
-                  f"Hover time: {self.time_at_target:.1f}s, "
-                  f"{obstacle_info}")
-            print(f"Rewards-------------------------------------------- , "
-                  f"\nDist: {distance_reward:.1f}, Approach: {approaching_reward:.1f},"
-                  f"Pos: {position_precision_reward:.1f}, Stab: {stability_reward:.1f}, "
-                  f"Hover: {hover_time_reward:.1f}"
-                  f"\nTotal reward: {total_reward:.2f}")
+                  f"Hover time: {self.time_at_target:.1f}s{obstacle_info}")
+            
+            print(f"\n--------------------Rewards--------------------")
+            print(f"Navigation ({navigation_reward:.2f}):")
+            print(f"  - Distance: {nav_details['distance_reward']:.2f}")
+            print(f"  - Approaching: {nav_details['approaching_reward']:.2f}")
+            print(f"  - Position Precision: {nav_details['position_precision_reward']:.2f}")
+            print(f"    * X penalty: {nav_details['x_penalty']:.3f}")
+            print(f"    * Y penalty: {nav_details['y_penalty']:.3f}")
+            print(f"    * Z penalty: {nav_details['z_penalty']:.3f}")
+            
+            print(f"Stability ({stability_reward:.2f}):")
+            print(f"  - Attitude: {stab_details['attitude_penalty']:.2f} (RPY: {stab_details['rpy']})")
+            print(f"  - Angular Vel: {stab_details['angular_velocity_penalty']:.2f} (|ω|: {stab_details['angular_vel_norm']:.3f})")
+            print(f"  - RPM Smoothness: {stab_details['rpm_smoothness_penalty']:.2f}")
+
+            print(f"Hovering ({hovering_reward:.2f}):")
+            print(f"  - Speed: {hover_details['speed_reward']:.2f} (|v|: {hover_details['velocity_norm']:.3f})")
+            print(f"  - Hover Time: {hover_details['hover_time_reward']:.2f} (in zone: {hover_details['in_hover_zone']})")
+            
+            print(f"Obstacles ({obstacle_reward:.2f}):")
+
+            
+            print(f"Completion: {completion_reward:.2f}")
+            print(f"TOTAL REWARD: {total_reward:.2f}")
         
         return total_reward
 
@@ -556,7 +652,7 @@ class UnifiedAviary(BaseRLAviary):
                 self.TARGET_POS = np.array([
                     np.random.uniform(2.0, 4.0),
                     np.random.uniform(2.0, 4.0),
-                    np.random.uniform(1.0, 2.0)
+                    np.random.uniform(0.5, 2.0)
                 ])
                 if np.linalg.norm(self.TARGET_POS - self.START_POS) > 2.0:
                     break
