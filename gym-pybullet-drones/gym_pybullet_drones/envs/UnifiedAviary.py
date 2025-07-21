@@ -1,5 +1,6 @@
 import numpy as np
 import pybullet as p
+import time
 from gymnasium import spaces
 from gym_pybullet_drones.envs.BaseRLAviary import BaseRLAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics, ActionType, ObservationType
@@ -30,8 +31,9 @@ class UnifiedAviary(BaseRLAviary):
                  obstacle_radius: float = 0.25,
                  sensing_range: float = 2.0,
                  target_radius: float = 0.15,  # Target area radius
-                 hover_threshold: float = 0.05,  # Hover precision threshold
-                 episode_len_sec: int = 30):
+                 hover_threshold: float = 0.3,  # Hover precision threshold
+                 episode_len_sec: int = 30,
+                 enable_obstacles: bool = True):
         
         # Task
         self.RANDOMIZE_INIT = randomize_init
@@ -41,9 +43,9 @@ class UnifiedAviary(BaseRLAviary):
         self.TARGET_RADIUS = target_radius
         self.HOVER_THRESHOLD = hover_threshold
         self.EPISODE_LEN_SEC = episode_len_sec
+        self.ENABLE_OBSTACLES = enable_obstacles
         
         # Task state
-        self.TASK_STATE = "NAVIGATE"  # "NAVIGATE", "APPROACHING", "HOVERING", "COMPLETED"
         self.START_POS = np.array([0, 0, 1])
         self.TARGET_POS = np.array([3, 3, 1.5])
         self.obstacle_positions = []
@@ -51,9 +53,16 @@ class UnifiedAviary(BaseRLAviary):
         
         # Performance metrics
         self.time_at_target = 0
-        self.required_hover_time = 3.0  # required time to hover at target
+        self.required_hover_time = 5.0
         self.navigation_progress = 0.0
         self.last_distance_to_target = 0.0
+
+        # Timing metrics
+        self.episode_start_time = None
+        self.episode_count = 0
+        self.episode_times = []
+        self.total_training_time = 0.0
+        self.task_completion_times = []
         
         # Visualisation
         self.target_visual_id = None
@@ -118,42 +127,46 @@ class UnifiedAviary(BaseRLAviary):
         self.obstacle_positions = []
 
         # Randomly place obstacles between start and end points
-        for i in range(self.NUM_OBSTACLES):
-            max_attempts = 50
-            for attempt in range(max_attempts):
-                x = np.random.uniform(-1, 4)
-                y = np.random.uniform(-1, 4)
-                z = np.random.uniform(0.3, 2.0)
-                pos = np.array([x, y, z])
-                
-                # Ensure obstacles are not too close to start and end points
-                start_dist = np.linalg.norm(pos - self.START_POS)
-                target_dist = np.linalg.norm(pos - self.TARGET_POS)
-                
-                # Check if the position is too close to existing obstacles
-                too_close = False
-                for existing_pos in self.obstacle_positions:
-                    if np.linalg.norm(pos - existing_pos) < self.OBSTACLE_RADIUS * 3:
-                        too_close = True
+        if self.ENABLE_OBSTACLES:
+            print("Adding obstacles...")
+            for i in range(self.NUM_OBSTACLES):
+                max_attempts = 50
+                for attempt in range(max_attempts):
+                    x = np.random.uniform(-1, 4)
+                    y = np.random.uniform(-1, 4)
+                    z = np.random.uniform(0.3, 2.0)
+                    pos = np.array([x, y, z])
+                    
+                    # Ensure obstacles are not too close to start and end points
+                    start_dist = np.linalg.norm(pos - self.START_POS)
+                    target_dist = np.linalg.norm(pos - self.TARGET_POS)
+                    
+                    # Check if the position is too close to existing obstacles
+                    too_close = False
+                    for existing_pos in self.obstacle_positions:
+                        if np.linalg.norm(pos - existing_pos) < self.OBSTACLE_RADIUS * 3:
+                            too_close = True
+                            break
+                    
+                    if (start_dist > 0.8 and target_dist > 0.8 and not too_close):
                         break
                 
-                if (start_dist > 0.8 and target_dist > 0.8 and not too_close):
-                    break
-            
-            # Create obstacles
-            obstacle_collision = p.createCollisionShape(p.GEOM_SPHERE, radius=self.OBSTACLE_RADIUS)
-            obstacle_visual = p.createVisualShape(p.GEOM_SPHERE, 
-                                                 radius=self.OBSTACLE_RADIUS,
-                                                 rgbaColor=[0.8, 0.2, 0.2, 0.8])
-            
-            body_id = p.createMultiBody(baseMass=0,
-                                       baseCollisionShapeIndex=obstacle_collision,
-                                       baseVisualShapeIndex=obstacle_visual,
-                                       basePosition=pos,
-                                       physicsClientId=self.CLIENT)
-            
-            self.obstacle_ids.append(body_id)
-            self.obstacle_positions.append(pos)
+                # Create obstacles
+                obstacle_collision = p.createCollisionShape(p.GEOM_SPHERE, radius=self.OBSTACLE_RADIUS)
+                obstacle_visual = p.createVisualShape(p.GEOM_SPHERE, 
+                                                    radius=self.OBSTACLE_RADIUS,
+                                                    rgbaColor=[0.8, 0.2, 0.2, 0.8])
+                
+                body_id = p.createMultiBody(baseMass=0,
+                                        baseCollisionShapeIndex=obstacle_collision,
+                                        baseVisualShapeIndex=obstacle_visual,
+                                        basePosition=pos,
+                                        physicsClientId=self.CLIENT)
+                
+                self.obstacle_ids.append(body_id)
+                self.obstacle_positions.append(pos)
+        else:
+            print(f"⭕ No obstacles added - obstacle-free training mode")
 
         self._visualizeTarget()
 
@@ -229,33 +242,14 @@ class UnifiedAviary(BaseRLAviary):
         
         return np.array(distances)
 
-    def _update_task_state(self, drone_pos):
+    def _update_hover_timer(self, drone_pos):
+        """更新悬停计时器（不影响奖励状态）"""
         distance_to_target = np.linalg.norm(self.TARGET_POS - drone_pos)
         
-        if self.TASK_STATE == "NAVIGATE":
-            if distance_to_target < self.TARGET_RADIUS:
-                self.TASK_STATE = "APPROACHING"
-                print(f"🎯 Entering target area! Distance: {distance_to_target:.3f}m")
-        
-        elif self.TASK_STATE == "APPROACHING":
-            if distance_to_target < self.HOVER_THRESHOLD:
-                self.TASK_STATE = "HOVERING"
-                self.time_at_target = 0
-                print(f"🎪 Started hovering! Distance: {distance_to_target:.3f}m")
-            elif distance_to_target > self.TARGET_RADIUS:
-                self.TASK_STATE = "NAVIGATE"
-                print("⚠️ Left target area, resuming navigation...")
-        
-        elif self.TASK_STATE == "HOVERING":
-            if distance_to_target < self.HOVER_THRESHOLD:
-                self.time_at_target += 1.0 / self.CTRL_FREQ
-                if self.time_at_target >= self.required_hover_time:
-                    self.TASK_STATE = "COMPLETED"
-                    print(f"✅ Task completed! Hovered for {self.time_at_target:.1f}s")
-            else:
-                self.TASK_STATE = "NAVIGATE"
-                self.time_at_target = 0
-                print("⚠️ Lost hover position, resuming navigation...")
+        if distance_to_target < self.HOVER_THRESHOLD:
+            self.time_at_target += 1.0 / self.CTRL_FREQ
+        else:
+            self.time_at_target = 0  # 离开目标区域时重置
 
     def _computeObs(self):
         # """计算增强的观察值"""
@@ -299,109 +293,118 @@ class UnifiedAviary(BaseRLAviary):
         # return enhanced_obs.astype(np.float32)
         return super()._computeObs()
 
+    '''
+
+    TODO:
+        - 添加高斯noise扰动
+
+    '''
     def _computeReward(self):
         state = self._getDroneStateVector(0)
         current_pos = state[0:3]
         current_vel = state[10:13]
+        rpy = state[7:10]  # roll, pitch, yaw
+        angular_vel = state[13:16]  # angular velocity
         
-        self._update_task_state(current_pos)
+        self._update_hover_timer(current_pos)
         total_reward = 0.0
         
-        # 1. Navigation reward - based on distance to target
-        current_distance = np.linalg.norm(self.TARGET_POS - current_pos)
-        navigation_reward = (self.last_distance_to_target - current_distance) * 15.0
+        # Navigation reward - based on distance to target
+        position_error = self.TARGET_POS - current_pos
+        current_distance = np.linalg.norm(position_error)
+        # 这个权重在距离为0时为1，在距离很大时接近0。
+        precision_weight = np.exp(-0.5 * current_distance)
+
+        # 它与任务的绝对尺度无关，无论目标在10米外还是1000米外，其表现都一样。
+        # 当无人机在起点时，奖励为0；在目标点时，奖励为20。
+        # distance_reward = 200.0 * (1 - current_distance / self.initial_distance)
+        # distance_reward = max(distance_reward, 0.0)
+
+        # TODO：设计一个和distance负相关的奖励函数，且需要满足distance很大的时候reward不会变得太小
+        distance_reward = -current_distance * precision_weight * 10.0
+
+
+        approaching_reward = (self.last_distance_to_target - current_distance) * 15.0
         self.last_distance_to_target = current_distance
         
-        # 2. Obstacle avoidance penalty - based on distance to obstacles
+        #    添加一个很小的数 epsilon 来防止除以零。
+        epsilon = 1e-6
+        normalized_error_x = abs(position_error[0]) / (self.initial_distance + epsilon)
+        normalized_error_y = abs(position_error[1]) / (self.initial_distance + epsilon)
+        normalized_error_z = abs(position_error[2]) / (self.initial_distance + epsilon)
+        # precision_factor = 1.0    # 越近系数越大
+        decay_coefficient = 5.0 # 衰减系数，可以调整
+        
+        x_precision = -normalized_error_x 
+        y_precision = -normalized_error_y
+        z_precision = -normalized_error_z * 9
+
+        position_precision_reward = (x_precision + y_precision + z_precision)
+
+        
+        # Obstacle avoidance penalty
         obstacle_penalty = 0
-        min_obstacle_distance = float('inf')
-        
-        for obs_pos in self.obstacle_positions:
-            dist_to_obstacle = np.linalg.norm(current_pos - obs_pos)
-            min_obstacle_distance = min(min_obstacle_distance, dist_to_obstacle)
-            
-            safety_distance = self.OBSTACLE_RADIUS + 0.4
-            danger_distance = self.OBSTACLE_RADIUS + 0.2
+        if self.ENABLE_OBSTACLES and len(self.obstacle_positions) > 0:
+            critical_distance = self.OBSTACLE_RADIUS + 0.3
+            for obs_pos in self.obstacle_positions:
+                dist_to_obstacle = np.linalg.norm(current_pos - obs_pos)
+                if dist_to_obstacle < critical_distance:
+                    penalty_factor = np.exp(-(dist_to_obstacle - self.OBSTACLE_RADIUS) * 5.0)
+                    obstacle_penalty -= 10.0 * penalty_factor
+                    if dist_to_obstacle < self.OBSTACLE_RADIUS + 0.05:
+                        obstacle_penalty -= 100.0
 
-            # Danger zone penalty
-            if dist_to_obstacle < safety_distance:
-                safety_factor = max(0, (safety_distance - dist_to_obstacle) / (safety_distance - danger_distance))
-                obstacle_penalty -= 5.0 * safety_factor
+        # 4. 悬停稳定性奖励 - 接近目标时奖励低速度
+        stability_reward = 0
+        if current_distance < self.HOVER_THRESHOLD:
+            stability_reward = precision_weight * 5.0 * np.exp(-np.linalg.norm(current_vel))
 
-            # Crash penalty
-            if dist_to_obstacle < self.OBSTACLE_RADIUS + 0.1:
-                obstacle_penalty -= 100.0
+        
+        # 姿态稳定性
+        attitude_penalty = -0.5 * (rpy[0]**2 + rpy[1]**2)
+        angular_velocity_penalty = -10.0 * np.linalg.norm(angular_vel)
+        
+        # 5. 悬停时间奖励 - 在目标附近停留的时间
+        hover_time_reward = 0
+        if current_distance < self.HOVER_THRESHOLD:
+            hover_time_reward = self.time_at_target * 20.0
 
-        # 3. Task state rewards
-        if self.TASK_STATE == "NAVIGATE":
-            # Navigation: Encourage moving towards the target
-            direction_to_target = self.TARGET_POS - current_pos
-            if np.linalg.norm(direction_to_target) > 0:
-                direction_to_target = direction_to_target / np.linalg.norm(direction_to_target)
-                velocity_direction = current_vel / (np.linalg.norm(current_vel) + 1e-6)
-                direction_reward = 2.0 * np.dot(direction_to_target, velocity_direction)
-            else:
-                direction_reward = 0
-            
-            distance_reward = 10.0 * np.exp(-current_distance * 1.5)
-            attitude_stability = -2.0 * (abs(state[7]) + abs(state[8]))  # roll, pitch
-            angular_stability = -1.0 * np.linalg.norm(state[13:16])     # angular velocity
-            task_reward = direction_reward + distance_reward + attitude_stability + angular_stability
-            
-        elif self.TASK_STATE == "APPROACHING":
-            # Approaching: Encourage approaching the target
-            approach_reward = 10.0 * np.exp(-current_distance * 10.0)
-            
-            # Speed penalty: discourage high speeds
-            speed_penalty = -2.0 * np.linalg.norm(current_vel)
+        # 8. 任务完成奖励
+        completion_reward = 0
+        if self.time_at_target >= self.required_hover_time:
+            completion_reward = 500.0
 
-            attitude_stability = -3.0 * (abs(state[7]) + abs(state[8]))
-            angular_stability = -2.0 * np.linalg.norm(state[13:16])
-            
-            task_reward = approach_reward + speed_penalty + attitude_stability + angular_stability
-            
-        elif self.TASK_STATE == "HOVERING":
-            # Hovering: Encourage stable hovering at the target position
-            hover_reward = 30.0 * np.exp(-current_distance * 15.0)
-            
-            # Velocity and attitude penalties: discourage excessive movement
-            velocity_penalty = -8.0 * np.linalg.norm(current_vel)
-            attitude_penalty = -5.0 * (abs(state[7]) + abs(state[8]))  # roll, pitch
-            angular_velocity_penalty = -3.0 * np.linalg.norm(state[13:16])
-            
-            # Hover time reward: encourage staying at the target
-            hover_time_reward = self.time_at_target * 5.0
-            
-            task_reward = hover_reward + velocity_penalty + attitude_penalty + angular_velocity_penalty + hover_time_reward
-            
-        elif self.TASK_STATE == "COMPLETED":
-            task_reward = 500.0
-        
-        else:
-            task_reward = 0
-        
-        # 4. General penalties
-        boundary_penalty = 0
-        if (current_pos[0] < -2 or current_pos[0] > 5 or 
-            current_pos[1] < -2 or current_pos[1] > 5 or
-            current_pos[2] < 0.1 or current_pos[2] > 3.0):
-            boundary_penalty = -100.0
-        
-        time_penalty = -0.05  # Encourage completing the task quickly
-        
         total_reward = (
-            navigation_reward +
-            obstacle_penalty +
-            task_reward +
-            boundary_penalty +
-            time_penalty
+            # distance_reward +
+            # approaching_reward +
+            position_precision_reward +
+            stability_reward +
+            hover_time_reward +
+            # attitude_penalty +
+            angular_velocity_penalty +
+            # obstacle_penalty
+            completion_reward
         )
+
+        if self.step_counter % 100 == 0:
+            obstacle_info = f", Obstacles: {len(self.obstacle_positions)}" if self.ENABLE_OBSTACLES else ", No obstacles"
+            print(f"\nDebug---------------------------------------------- , "
+                  f"\nTarget: {self.TARGET_POS}, \nDrone Pos: {current_pos}, "
+                  f"\nDistance: {current_distance:.3f},"
+                  f"Speed: {np.linalg.norm(current_vel):.2f}, "
+                  f"Hover time: {self.time_at_target:.1f}s, "
+                  f"{obstacle_info}")
+            print(f"Rewards-------------------------------------------- , "
+                  f"\nDist: {distance_reward:.1f}, Approach: {approaching_reward:.1f},"
+                  f"Pos: {position_precision_reward:.1f}, Stab: {stability_reward:.1f}, "
+                  f"Hover: {hover_time_reward:.1f}"
+                  f"\nTotal reward: {total_reward:.2f}")
         
         return total_reward
 
     def _computeTerminated(self):
         """Is the task completed?"""
-        return self.TASK_STATE == "COMPLETED"
+        return self.time_at_target >= self.required_hover_time
 
     def _computeTruncated(self):
         """Is the episode truncated?"""
@@ -409,24 +412,29 @@ class UnifiedAviary(BaseRLAviary):
         current_pos = state[0:3]
         
         # Hit obstacle detection
-        for obs_pos in self.obstacle_positions:
-            if np.linalg.norm(current_pos - obs_pos) < self.OBSTACLE_RADIUS + 0.05:
-                return True
+        if self.ENABLE_OBSTACLES:
+            for obs_pos in self.obstacle_positions:
+                if np.linalg.norm(current_pos - obs_pos) < self.OBSTACLE_RADIUS + 0.05:
+                    print(f"🚫 Truncated because of Obstacle Hit")
+                    return True
         
         # Border violation detection
         if (current_pos[0] < -2 or current_pos[0] > 5 or 
             current_pos[1] < -2 or current_pos[1] > 5 or
             current_pos[2] < 0.05 or current_pos[2] > 3.5):
+            print(f"🚫 Truncated because of Border Violation")
             return True
         
         # Altitude violation detection
-        rpy = state[7:10]
-        if abs(rpy[0]) > 1.0 or abs(rpy[1]) > 1.0:  # 57 degrees
-            return True
+        # rpy = state[7:10]
+        # if abs(rpy[0]) > 1.0 or abs(rpy[1]) > 1.0:  # 57 degrees
+        #     print(f"🚫 Truncated because of Altitude Violation")
+        #     return True
         
-        # Time limit detection
-        if self.step_counter / self.PYB_FREQ > self.EPISODE_LEN_SEC:
-            return True
+        # # Time limit detection
+        # if self.step_counter / self.PYB_FREQ > self.EPISODE_LEN_SEC:
+        #     print(f"🚫 Truncated because of Time Limit")
+        #     return True
         
         return False
 
@@ -434,18 +442,97 @@ class UnifiedAviary(BaseRLAviary):
         state = self._getDroneStateVector(0)
         current_pos = state[0:3]
         
+        current_episode_time = time.time() - self.episode_start_time if self.episode_start_time else 0
+        
         return {
             "current_pos": current_pos,
             "target_pos": self.TARGET_POS,
             "distance_to_target": np.linalg.norm(current_pos - self.TARGET_POS),
-            "task_state": self.TASK_STATE,
             "time_at_target": self.time_at_target,
-            "navigation_progress": self.navigation_progress,
-            "obstacle_positions": self.obstacle_positions
+            "obstacle_positions": self.obstacle_positions,
+            "episode_time": current_episode_time,
+            "episode_count": self.episode_count,
+            "total_training_time": self.total_training_time,
+            "avg_episode_time": np.mean(self.episode_times) if self.episode_times else 0,
+            "success_rate": len(self.task_completion_times) / max(1, self.episode_count) * 100,
+            "avg_completion_time": np.mean(self.task_completion_times) if self.task_completion_times else 0
         }
 
+    def get_timing_stats(self):
+        """获取详细的时间统计信息"""
+        if not self.episode_times:
+            return {
+                "total_episodes": 0,
+                "total_training_time": 0,
+                "avg_episode_time": 0,
+                "min_episode_time": 0,
+                "max_episode_time": 0,
+                "success_rate": 0,
+                "avg_completion_time": 0
+            }
+        
+        return {
+            "total_episodes": len(self.episode_times),
+            "total_training_time": self.total_training_time,
+            "avg_episode_time": np.mean(self.episode_times),
+            "min_episode_time": np.min(self.episode_times),
+            "max_episode_time": np.max(self.episode_times),
+            "std_episode_time": np.std(self.episode_times),
+            "success_rate": len(self.task_completion_times) / len(self.episode_times) * 100,
+            "avg_completion_time": np.mean(self.task_completion_times) if self.task_completion_times else 0,
+            "recent_avg_time": np.mean(self.episode_times[-10:]) if len(self.episode_times) >= 10 else np.mean(self.episode_times)
+        }
+    
+    def print_final_stats(self):
+        """打印最终的训练统计信息"""
+        stats = self.get_timing_stats()
+        
+        print("\n" + "="*60)
+        print("🏁 FINAL TRAINING STATISTICS")
+        print("="*60)
+        print(f"Total Episodes: {stats['total_episodes']}")
+        print(f"Total Training Time: {stats['total_training_time']/3600:.2f} hours")
+        print(f"Average Episode Time: {stats['avg_episode_time']:.2f}s")
+        print(f"Min/Max Episode Time: {stats['min_episode_time']:.2f}s / {stats['max_episode_time']:.2f}s")
+        print(f"Episode Time Std: {stats['std_episode_time']:.2f}s")
+        print(f"Success Rate: {stats['success_rate']:.1f}%")
+        if stats['avg_completion_time'] > 0:
+            print(f"Average Task Completion Time: {stats['avg_completion_time']:.2f}s")
+        print(f"Recent Performance (last 10): {stats['recent_avg_time']:.2f}s avg")
+        print("="*60)
+    
     def reset(self, seed=None, options=None):
         '''reset state'''
+        # 记录上一个episode的结束时间
+        if self.episode_start_time is not None:
+            episode_duration = time.time() - self.episode_start_time
+            self.episode_times.append(episode_duration)
+            self.total_training_time += episode_duration
+            
+            # 打印episode统计信息
+            self.episode_count += 1
+            avg_time = np.mean(self.episode_times[-10:]) if len(self.episode_times) >= 10 else np.mean(self.episode_times)
+            
+            task_completed = self.time_at_target >= self.required_hover_time
+
+            print(f"📊 Episode {self.episode_count} completed:")
+            print(f"   Duration: {episode_duration:.2f}s")
+            print(f"   Hover time: {self.time_at_target:.1f}s")
+            print(f"   Task completed: {'✅ Yes' if task_completed else '❌ No'}")
+            print(f"   Avg time (last 10): {avg_time:.2f}s")
+            print(f"   Total training time: {self.total_training_time/60:.1f}min")
+            
+            # 如果任务完成，记录完成时间
+            if task_completed:
+                self.task_completion_times.append(episode_duration)
+                success_rate = len(self.task_completion_times) / self.episode_count * 100
+                avg_completion_time = np.mean(self.task_completion_times)
+                print(f"   Success rate: {success_rate:.1f}%")
+                print(f"   Avg completion time: {avg_completion_time:.2f}s")
+        
+        # 开始新episode的计时
+        self.episode_start_time = time.time()
+
         # Remove existing target bodies
         for body_id in getattr(self, 'target_body_ids', []):
             try:
@@ -454,7 +541,6 @@ class UnifiedAviary(BaseRLAviary):
                 pass
         self.target_body_ids = []
 
-        self.TASK_STATE = "NAVIGATE"
         self.time_at_target = 0
         # self.navigation_progress = 0.0
         
@@ -476,7 +562,10 @@ class UnifiedAviary(BaseRLAviary):
                     break
         
         self.last_distance_to_target = np.linalg.norm(self.TARGET_POS - self.START_POS)
-        
+        self.initial_distance = self.last_distance_to_target
+        if self.initial_distance < 1e-6:
+            self.initial_distance = 1e-6
+
         super().reset(seed=seed, options=options)
         
         # Reset drone position and orientation
@@ -509,14 +598,12 @@ class UnifiedAviary(BaseRLAviary):
                 p.removeUserDebugItem(self.connection_line_id, physicsClientId=self.CLIENT)
             
             # 根据任务状态选择不同颜色
-            if self.TASK_STATE == "NAVIGATE":
-                color = [0, 0, 1]  # 蓝色
-            elif self.TASK_STATE == "APPROACHING":
-                color = [1, 1, 0]  # 黄色
-            elif self.TASK_STATE == "HOVERING":
-                color = [0, 1, 0]  # 绿色
+            if self.time_at_target >= self.required_hover_time:
+                color = [0, 1, 0]  # 绿色 - 任务完成
+            elif self.time_at_target > 0:
+                color = [1, 1, 0]  # 黄色 - 正在悬停
             else:
-                color = [1, 0, 1]  # 紫色
+                color = [0, 0, 1]  # 蓝色 - 导航中
             
             self.connection_line_id = p.addUserDebugLine(
                 lineFromXYZ=drone_pos,

@@ -7,54 +7,21 @@ This script supports training and evaluation of PPO agents for:
 
 How to use
 ---------------------------------------------------------------------------------------------------------
-1. Hover task:
-    # 基础训练
-    python rl.py --task hover --train_mode True --episodes 100 --gui False
+# 无障碍物训练 - 专注于导航和悬停
+python rl.py --task unified --train_mode True --enable_obstacles False --episodes 1000 --gui False
 
-    # 长时间训练（更好性能）
-    python rl.py --task hover --train_mode True --episodes 2000 --learning_rate 3e-4 --gui False
+# 长时间无障碍物训练
+python rl.py --task unified --train_mode True --enable_obstacles False --episodes 2000 --learning_rate 3e-4 --gui False
 
-    # 快速测试训练
-    python rl.py --task hover --train_mode True --episodes 100 --eval_freq 500 --gui False
+# 标准有障碍物训练
+python rl.py --task unified --train_mode True --enable_obstacles True --episodes 1000 --gui False
 
-    # 高频评估训练
-    python rl.py --task hover --train_mode True --episodes 1000 --eval_freq 1000 --gui False
 
-2. Trajectory task:
-    # 圆形轨迹训练
-    python rl.py --task trajectory --trajectory_type circle --train_mode True --episodes 1500 --gui False
+# 在无障碍物环境中评估
+python rl.py --task unified --train_mode False --enable_obstacles False --gui True --duration_sec 60
 
-    # 8字轨迹训练
-    python rl.py --task trajectory --trajectory_type figure8 --train_mode True --episodes 1500 --gui False
-
-    # 航点轨迹训练
-    python rl.py --task trajectory --trajectory_type waypoints --train_mode True --episodes 2000 --gui False
-
-    # 带自定义参数的轨迹训练
-    python rl.py --task trajectory --trajectory_type circle --train_mode True --episodes 1500 --learning_rate 1e-4 --eval_freq 1000 --gui False
-
-3. Obstacle task:
-    # 基础避障训练
-    python rl.py --task obstacle --train_mode True --episodes 100 --gui False
-
-    # 高性能避障训练
-    python rl.py --task obstacle --train_mode True --episodes 2500 --learning_rate 1e-4 --eval_freq 1000 --gui False
-
-    # 快速避障训练
-    python rl.py --task obstacle --train_mode True --episodes 1000 --eval_freq 500 --gui False
-
-4. Unified task (综合任务):
-    # 基础统一任务训练
-    python rl.py --task unified --train_mode True --episodes 1000 --gui False
-
-    # 高性能统一任务训练（推荐）
-    python rl.py --task unified --train_mode True --episodes 3000 --learning_rate 1e-4 --eval_freq 1000 --gui False
-
-    # 长时间训练获得最佳性能
-    python rl.py --task unified --train_mode True --episodes 5000 --learning_rate 3e-5 --eval_freq 1500 --gui False
-
-    # 评估统一任务
-    python rl.py --task unified --train_mode False --gui True --duration_sec 60
+# 在有障碍物环境中评估
+python rl.py --task unified --train_mode False --enable_obstacles True --gui True --duration_sec 60
 ---------------------------------------------------------------------------------------------------------
 5. Continue training from a saved model:
     # 继续训练悬停任务
@@ -64,23 +31,8 @@ How to use
     python rl.py --task trajectory --trajectory_type circle --train_mode True --load_model results/trajectory_circle/best_model.zip --episodes 500 --gui False
 
     # 继续训练避障任务
-    python rl.py --task obstacle --train_mode True --load_model results/obstacle/best_model.zip --episodes 500 --gui False
+    python rl.py --task unified --train_mode True --load_model results/unified/best_model.zip --episodes 500 --gui False
 
-6. Evaluation:
-    # 评估悬停任务（自动找到最佳模型）
-    python rl.py --task hover --train_mode False --gui True --duration_sec 30
-
-    # 评估圆形轨迹跟踪
-    python rl.py --task trajectory --trajectory_type circle --train_mode False --gui True --duration_sec 60
-
-    # 评估8字轨迹跟踪
-    python rl.py --task trajectory --trajectory_type figure8 --train_mode False --gui True --duration_sec 60
-
-    # 评估航点轨迹跟踪
-    python rl.py --task trajectory --trajectory_type waypoints --train_mode False --gui True --duration_sec 90
-
-    # 评估避障任务
-    python rl.py --task obstacle --train_mode False --gui True --duration_sec 60
 ---------------------------------------------------------------------------------------------------------
 
 Notes
@@ -151,7 +103,7 @@ def create_environment(task, trajectory_type="circle", **kwargs):
         raise ValueError(f"Unknown task: {task}")
 
 def run_training(task, trajectory_type, output_folder, episodes, learning_rate, eval_freq, 
-                load_model, gui, record_video, obs_type, act_type, colab):
+                load_model, gui, record_video, obs_type, act_type, colab, enable_obstacles=True):
     """Run training for specified task."""
     
     # Create task-specific output folder (without timestamp)
@@ -186,15 +138,16 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
             'obstacle_radius': 0.3,
             'sensing_range': 2.0
         })
-    elif task == "unified":  # 新增统一任务配置
+    elif task == "unified":
         env_kwargs.update({
-            'num_obstacles': 8,
+            'num_obstacles': 8 if enable_obstacles else 0,
             'obstacle_radius': 0.25,
             'sensing_range': 2.0,
             'target_radius': 0.15,
             'hover_threshold': 0.05,
             'episode_len_sec': 30,
-            'randomize_init': True
+            'randomize_init': True,
+            'enable_obstacles': enable_obstacles
         })
     
     # Create vectorized training environment
@@ -212,7 +165,7 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
     print(f'[INFO] Observation space: {train_env.observation_space}')
     
     # Configure network architecture based on task
-    if task == "obstacle" or task == "unified":  # 统一任务也需要大网络
+    if task == "obstacle" or task == "unified":
         policy_kwargs = dict(
             net_arch=[dict(pi=[512, 512, 256], vf=[512, 512, 256])]
             )
@@ -358,6 +311,23 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
         reset_num_timesteps=False if load_model else True  # Don't reset timesteps if continuing
     )
     
+    # 训练结束后，访问环境的计时统计
+    if hasattr(train_env.envs[0], 'print_final_stats'):
+        print("\n" + "="*50)
+        print("📈 TRAINING COMPLETED - FINAL STATISTICS")
+        train_env.envs[0].print_final_stats()
+    
+    # 或者获取详细统计数据
+    if hasattr(train_env.envs[0], 'get_timing_stats'):
+        stats = train_env.envs[0].get_timing_stats()
+        
+        # 保存统计信息到文件
+        import json
+        stats_file = os.path.join(output_folder, 'timing_stats.json')
+        with open(stats_file, 'w') as f:
+            json.dump(stats, f, indent=2)
+        print(f"📊 Timing statistics saved to: {stats_file}")
+
     # Close environments
     train_env.close()
     eval_env.close()
@@ -386,7 +356,8 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
         'target_reward': target_reward,
         'timestamp': timestamp,
         'session_folder': session_folder,
-        'total_timesteps': total_timesteps
+        'total_timesteps': total_timesteps,
+        'enable_obstacles': enable_obstacles if task == "unified" else None
     }
     
     import json
@@ -448,7 +419,7 @@ def list_available_models(output_folder=DEFAULT_OUTPUT_FOLDER):
     
     print(f"   Available models in {output_folder}:")
     
-    tasks = ['hover', 'trajectory_circle', 'trajectory_figure8', 'trajectory_waypoints', 'obstacle']
+    tasks = ['hover', 'trajectory_circle', 'trajectory_figure8', 'trajectory_waypoints', 'obstacle','unified']
     found_models = False
     
     for task in tasks:
@@ -483,7 +454,7 @@ def list_available_models(output_folder=DEFAULT_OUTPUT_FOLDER):
         print("💡 Train a model first with: python rl.py --task hover --train_mode True")
 
 def run_evaluation(task, trajectory_type, model_path, output_folder, duration_sec, 
-                  gui, record_video, obs_type, act_type, colab):
+                  gui, record_video, obs_type, act_type, colab, enable_obstacles=True):
     """Run evaluation of trained model."""
     
     print(f"   Starting evaluation for {task} task...")
@@ -518,6 +489,17 @@ def run_evaluation(task, trajectory_type, model_path, output_folder, duration_se
             'num_obstacles': 5,
             'obstacle_radius': 0.3,
             'sensing_range': 2.0
+        })
+    elif task == "unified":
+        env_kwargs.update({
+            'num_obstacles': 8 if enable_obstacles else 0,
+            'obstacle_radius': 0.25,
+            'sensing_range': 2.0,
+            'target_radius': 0.15,
+            'hover_threshold': 0.05,
+            'episode_len_sec': 30,
+            'randomize_init': True,
+            'enable_obstacles': enable_obstacles
         })
     
     print(f"🔧 Environment parameters: {env_kwargs}")
@@ -601,7 +583,11 @@ def run_evaluation(task, trajectory_type, model_path, output_folder, duration_se
             
             # Task-specific info
             if hasattr(info, 'get'):
-                if task == "trajectory":
+                if task == "unified":
+                    distance = info.get('distance_to_target', 0)
+                    hover_time = info.get('time_at_target', 0)
+                    print(f"      Distance to target: {distance:.3f}m, Hover time: {hover_time:.1f}s")
+                elif task == "trajectory":
                     progress = info.get('trajectory_progress', 0)
                     print(f"      Progress: {progress:.1%}")
                 elif task == "obstacle":
@@ -618,8 +604,18 @@ def run_evaluation(task, trajectory_type, model_path, output_folder, duration_se
             print(f"Episode {episode_count} ended!")
             print(f"   Terminated: {terminated}, Truncated: {truncated}")
             obs, info = test_env.reset(seed=int(time.time()), options={})
-    
+
+            if task == "unified":
+                hover_time = getattr(test_env, 'time_at_target', 0)
+                required_time = getattr(test_env, 'required_hover_time', 3.0)
+                if terminated:
+                    print(f"   ✅ Task completed! Hovered for {hover_time:.1f}s (required: {required_time:.1f}s)")
+                else:
+                    print(f"   ❌ Task not completed. Hover time: {hover_time:.1f}s (required: {required_time:.1f}s)")
+            
+
     test_env.close()
+    test_env_nogui.close() 
     
     # Save and plot results
     print(f"Saving results to: {output_folder}")
@@ -640,7 +636,7 @@ def run(task=DEFAULT_TASK, trajectory_type=DEFAULT_TRAJECTORY_TYPE, train_mode=D
         episodes=DEFAULT_EPISODES, learning_rate=DEFAULT_LEARNING_RATE, eval_freq=DEFAULT_EVAL_FREQ,
         load_model=None, output_folder=DEFAULT_OUTPUT_FOLDER, duration_sec=DEFAULT_DURATION_SEC,
         gui=DEFAULT_GUI, record_video=DEFAULT_RECORD_VIDEO, obs_type=DEFAULT_OBS, 
-        act_type=DEFAULT_ACT, colab=DEFAULT_COLAB, list_models=False):
+        act_type=DEFAULT_ACT, colab=DEFAULT_COLAB, list_models=False, enable_obstacles=True):
     """Main function to run training or evaluation."""
     
     # List available models if requested
@@ -671,7 +667,8 @@ def run(task=DEFAULT_TASK, trajectory_type=DEFAULT_TRAJECTORY_TYPE, train_mode=D
             record_video=record_video,
             obs_type=obs_type,
             act_type=act_type,
-            colab=colab
+            colab=colab,
+            enable_obstacles=enable_obstacles
         )
         
         if not colab:
@@ -705,7 +702,8 @@ def run(task=DEFAULT_TASK, trajectory_type=DEFAULT_TRAJECTORY_TYPE, train_mode=D
             record_video=record_video,
             obs_type=obs_type,
             act_type=act_type,
-            colab=colab
+            colab=colab,
+            enable_obstacles=enable_obstacles
         )
 
 if __name__ == '__main__':
@@ -751,6 +749,8 @@ if __name__ == '__main__':
                        help='Whether running in Colab (default: False)')
     parser.add_argument('--list_models', action='store_true',
                     help='List all available trained models')
+    parser.add_argument('--enable_obstacles', default=True, type=str2bool,
+                       help='Whether to enable obstacles for unified task (default: True)')
     
 
     
