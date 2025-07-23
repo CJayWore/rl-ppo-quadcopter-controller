@@ -32,7 +32,7 @@ class UnifiedAviary(BaseRLAviary):
                  obstacle_radius: float = 0.25,
                  sensing_range: float = 2.0,
                  target_radius: float = 0.15,  # Target area radius
-                 hover_threshold: float = 0.3,  # Hover precision threshold
+                 hover_threshold: float = 0.5,  # Hover precision threshold
                  episode_len_sec: int = 30,
                  enable_obstacles: bool = True):
         
@@ -45,7 +45,6 @@ class UnifiedAviary(BaseRLAviary):
         self.HOVER_THRESHOLD = hover_threshold
         self.EPISODE_LEN_SEC = episode_len_sec
         self.ENABLE_OBSTACLES = enable_obstacles
-        
         # Task state
         self.START_POS = np.array([0, 0, 1])
         self.TARGET_POS = np.array([3, 3, 1.5])
@@ -308,16 +307,19 @@ class UnifiedAviary(BaseRLAviary):
 
         distance_reward = 0
         if current_distance >0.1:
-            distance_reward = 100/(1e-6 + current_distance)
+            distance_reward = 10/(1e-6 + current_distance)
         else:
-            distance_reward = 500 # Arrive at target with high reward
+            distance_reward = 50 # Arrive at target with high reward
 
         # if current_distance >= 4.0:
         #     distance_reward = 100/(current_distance)  # 基于距离的奖励，距离越近奖励越高
         # else:
         #     distance_reward = np.exp(-distance_reward) * 100  # 距离小于4时，使用指数衰减奖励
         # distance_reward = -10 * (1 - np.exp(-0.1 * current_distance**2))
-        approaching_reward = (self.last_distance_to_target - current_distance) * 100.0
+        delta_distance = (self.last_distance_to_target - current_distance)
+        approaching_reward = 0
+        if delta_distance > 0:
+            approaching_reward = delta_distance * 10.0
         self.last_distance_to_target = current_distance
 
         # postion_precision_reward = 0
@@ -327,11 +329,11 @@ class UnifiedAviary(BaseRLAviary):
         z_penalty = 1.0-np.tanh(k * abs(position_error[2]))
         
         # 给Z轴稍高权重但不过分
-        position_precision_reward = (x_penalty + y_penalty + z_penalty) * 10
+        position_precision_reward = (x_penalty + y_penalty + 1.5 * z_penalty)
 
         height_safety_reward = 0
         if current_pos[2] < 0.3:  # 危险低高度
-            height_safety_reward = -50.0 * (0.3 - current_pos[2])
+            height_safety_reward = -5.0 * (0.3 - current_pos[2])
         elif current_pos[2] > 0.5:  # 安全高度
             height_safety_reward = 2.0
 
@@ -367,8 +369,9 @@ class UnifiedAviary(BaseRLAviary):
         pitch_stability = max(0, 10.0 * (1.0 - abs(rpy[1]) / max_tilt))
         attitude_penalty = roll_stability + pitch_stability
 
+        max_ang_vel = 2.0 
 
-        angular_velocity_penalty = -0.5 * np.linalg.norm(angular_vel)
+        angular_velocity_reward = 5.0 * max(0, 1.0 - np.linalg.norm(angular_vel) / max_ang_vel)
         # linear_velocity_penalty = -0.5 * (current_vel[0]**2 + current_vel[1]**2 + current_vel[2]**2)
         
         # RPM smoothness penalty using available last_action
@@ -376,13 +379,13 @@ class UnifiedAviary(BaseRLAviary):
 
         stability_penalty = (
             attitude_penalty +
-            angular_velocity_penalty 
+            angular_velocity_reward 
             # rpm_smoothness_penalty
         )
 
         return stability_penalty, {
             'attitude_penalty': attitude_penalty,
-            'angular_velocity_penalty': angular_velocity_penalty,
+            'angular_velocity_reward': angular_velocity_reward,
             'rpm_smoothness_penalty': rpm_smoothness_penalty,
             'rpy': rpy,
             'angular_vel_norm': np.linalg.norm(angular_vel)
@@ -393,25 +396,47 @@ class UnifiedAviary(BaseRLAviary):
         current_pos = state[0:3]
         current_vel = state[10:13]
         
+        distance_to_target = np.linalg.norm(current_pos - self.TARGET_POS)
+        velocity_norm = np.linalg.norm(current_vel)
         # 悬停稳定性奖励 - 接近目标时奖励低速度
-        speed_reward = 0
-        if np.linalg.norm(current_pos - self.TARGET_POS) < self.HOVER_THRESHOLD:
-            speed_reward = 5.0 * np.exp(-np.linalg.norm(current_vel))
-
+        # speed_reward = 0
+        # if distance_to_target < self.HOVER_THRESHOLD:
+        #     speed_reward = 100.0/(1e-6 + velocity_norm)  # 接近目标时速度越低奖励越高
         
+        ################################################################################################
+        MAX_HOVER_REWARD = 10.0  # Max reward for a perfect hover at the target center.
+        
+        # We set the distance decay so the reward is half its max at the HOVER_THRESHOLD boundary.
+        DISTANCE_DECAY = np.log(2) / (self.HOVER_THRESHOLD**2)
+        
+        # This controls how strongly velocity is penalized. Higher value = more penalty for speed.
+        VELOCITY_DECAY = 3.0
+
+        # Calculate a distance-based factor (0 to 1) using a Gaussian function.
+        distance_factor = np.exp(-DISTANCE_DECAY * distance_to_target**2)
+        
+        # Calculate a velocity-based factor (0 to 1) using another Gaussian function.
+        velocity_factor = np.exp(-VELOCITY_DECAY * velocity_norm**2)
+        
+        # The final reward is the product of these smooth factors.
+        speed_reward = MAX_HOVER_REWARD * distance_factor * velocity_factor
+        ################################################################################################
+
         # 悬停时间奖励 - 在目标附近停留的时间
         hover_time_reward = 0
-        if np.linalg.norm(current_pos - self.TARGET_POS) < self.HOVER_THRESHOLD:
-            hover_time_reward = self.time_at_target * 20.0
+        if distance_to_target < self.HOVER_THRESHOLD:
+            # 使用 min() 函数来给奖励设置一个上限，例如20.0
+            # 这样既能鼓励持续悬停，又不会让奖励无限增长
+            hover_time_reward = min(20.0, self.time_at_target * 2.0)
         
         hovering_reward = speed_reward + hover_time_reward
 
         return hovering_reward, {
             'speed_reward': speed_reward,
             'hover_time_reward': hover_time_reward,
-            'velocity_norm': np.linalg.norm(current_vel),
-            'distance_to_target': np.linalg.norm(current_pos - self.TARGET_POS),
-            'in_hover_zone': np.linalg.norm(current_pos - self.TARGET_POS) < self.HOVER_THRESHOLD
+            'velocity_norm': velocity_norm,
+            'distance_to_target': distance_to_target,
+            'in_hover_zone': distance_to_target < self.HOVER_THRESHOLD
         }
 
     def _obstacleAvoidanceReward(self):
@@ -449,15 +474,15 @@ class UnifiedAviary(BaseRLAviary):
         
         
         # 任务完成奖励
-        survival_reward = 1.0
+        survival_reward = 0.5
         completion_reward = 0
         if self.time_at_target >= self.required_hover_time:
-            completion_reward = 500.0
+            completion_reward = 50.0
 
         total_reward = (
             navigation_reward +
             stability_reward +
-            # hovering_reward +
+            hovering_reward +
             # obstacle_reward +
             completion_reward +
             survival_reward
@@ -483,7 +508,7 @@ class UnifiedAviary(BaseRLAviary):
             
             print(f"Stability ({stability_reward:.2f}):")
             print(f"  - Attitude: {stab_details['attitude_penalty']:.2f} (RPY: {stab_details['rpy']})")
-            print(f"  - Angular Vel: {stab_details['angular_velocity_penalty']:.2f} (|ω|: {stab_details['angular_vel_norm']:.3f})")
+            print(f"  - Angular Vel: {stab_details['angular_velocity_reward']:.2f} (|ω|: {stab_details['angular_vel_norm']:.3f})")
             print(f"  - RPM Smoothness: {stab_details['rpm_smoothness_penalty']:.2f}")
 
             print(f"Hovering ({hovering_reward:.2f}):")
@@ -522,15 +547,15 @@ class UnifiedAviary(BaseRLAviary):
             return True
         
         # Altitude violation detection
-        # rpy = state[7:10]
-        # if abs(rpy[0]) > 1.0 or abs(rpy[1]) > 1.0:  # 57 degrees
-        #     print(f"🚫 Truncated because of Altitude Violation")
-        #     return True
+        rpy = state[7:10]
+        if abs(rpy[0]) > 1.0 or abs(rpy[1]) > 1.0:  # 57 degrees
+            print(f"🚫 Truncated because of Altitude Violation")
+            return True
         
-        # # Time limit detection
-        # if self.step_counter / self.PYB_FREQ > self.EPISODE_LEN_SEC:
-        #     print(f"🚫 Truncated because of Time Limit")
-        #     return True
+        # Time limit detection
+        if self.step_counter / self.PYB_FREQ > self.EPISODE_LEN_SEC:
+            print(f"🚫 Truncated because of Time Limit")
+            return True
         
         return False
 

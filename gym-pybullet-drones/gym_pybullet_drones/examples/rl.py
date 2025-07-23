@@ -16,6 +16,8 @@ python rl.py --task unified --train_mode True --enable_obstacles False --episode
 # 标准有障碍物训练
 python rl.py --task unified --train_mode True --enable_obstacles True --episodes 1000 --gui False
 
+# 用已有模型继续训练
+python rl.py --task unified --train_mode True --enable_obstacles True --load_model results/unified/best_model.zip --episodes 500 --gui False
 
 # 在无障碍物环境中评估
 python rl.py --task unified --train_mode False --enable_obstacles False --gui True --duration_sec 60
