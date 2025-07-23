@@ -85,7 +85,7 @@ def get_target_reward(task, act_type):
     elif task == "obstacle":
         return 300.0
     elif task == "unified":  
-        return 50000.0
+        return 30000.0
     else:
         return 300.0
 
@@ -144,7 +144,7 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
             'obstacle_radius': 0.25,
             'sensing_range': 2.0,
             'target_radius': 0.15,
-            'hover_threshold': 0.05,
+            # 'hover_threshold': 1.0,
             'episode_len_sec': 30,
             'randomize_init': True,
             'enable_obstacles': enable_obstacles
@@ -496,7 +496,7 @@ def run_evaluation(task, trajectory_type, model_path, output_folder, duration_se
             'obstacle_radius': 0.25,
             'sensing_range': 2.0,
             'target_radius': 0.15,
-            'hover_threshold': 0.05,
+            # 'hover_threshold': 1.0,
             'episode_len_sec': 30,
             'randomize_init': True,
             'enable_obstacles': enable_obstacles
