@@ -10,32 +10,20 @@ How to use
 # 无障碍物训练 - 专注于导航和悬停
 python rl.py --task unified --train_mode True --enable_obstacles False --episodes 1000 --gui False
 
-# 长时间无障碍物训练
-python rl.py --task unified --train_mode True --enable_obstacles False --episodes 2000 --learning_rate 3e-4 --gui False
+# 用已有模型继续训练（无障碍物）
+python rl.py --task unified --train_mode True --enable_obstacles False --load_model results/unified/best_model.zip --episodes 500 --gui False
 
-# 标准有障碍物训练
-python rl.py --task unified --train_mode True --enable_obstacles True --episodes 1000 --gui False
-
-# 用已有模型继续训练
+# 用已有模型继续训练（有障碍物）
 python rl.py --task unified --train_mode True --enable_obstacles True --load_model results/unified/best_model.zip --episodes 500 --gui False
 
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # 在无障碍物环境中评估
 python rl.py --task unified --train_mode False --enable_obstacles False --gui True --duration_sec 60
 
 # 在有障碍物环境中评估
 python rl.py --task unified --train_mode False --enable_obstacles True --gui True --duration_sec 60
----------------------------------------------------------------------------------------------------------
-5. Continue training from a saved model:
-    # 继续训练悬停任务
-    python rl.py --task hover --train_mode True --load_model results/hover/best_model.zip --episodes 500 --gui False
+--------------------------------------------------------------------------------------------------------
 
-    # 继续训练轨迹跟踪
-    python rl.py --task trajectory --trajectory_type circle --train_mode True --load_model results/trajectory_circle/best_model.zip --episodes 500 --gui False
-
-    # 继续训练避障任务
-    python rl.py --task unified --train_mode True --load_model results/unified/best_model.zip --episodes 500 --gui False
-
----------------------------------------------------------------------------------------------------------
 
 Notes
 -----
