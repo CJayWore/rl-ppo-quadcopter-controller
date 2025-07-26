@@ -483,43 +483,43 @@ class UnifiedAviary(BaseRLAviary):
             navigation_reward +
             stability_reward +
             hovering_reward +
-            # obstacle_reward +
+            obstacle_reward +
             completion_reward +
             survival_reward
         )
 
         # 详细调试输出
-        if self.step_counter % 100 == 0:
-            obstacle_info = f", Obstacles: {len(self.obstacle_positions)}" if self.ENABLE_OBSTACLES else ", No obstacles"
-            print(f"\n--------------------Environments-------------------- "
-                  f"\nTarget: {self.TARGET_POS}, \nDrone Pos: {current_pos}, "
-                  f"\nDistance: {current_distance:.3f},"
-                  f"Speed: {np.linalg.norm(current_vel):.2f}, "
-                  f"Hover time: {self.time_at_target:.1f}s{obstacle_info}")
+        # if self.step_counter % 100 == 0:
+        #     obstacle_info = f", Obstacles: {len(self.obstacle_positions)}" if self.ENABLE_OBSTACLES else ", No obstacles"
+        #     print(f"\n--------------------Environments-------------------- "
+        #           f"\nTarget: {self.TARGET_POS}, \nDrone Pos: {current_pos}, "
+        #           f"\nDistance: {current_distance:.3f},"
+        #           f"Speed: {np.linalg.norm(current_vel):.2f}, "
+        #           f"Hover time: {self.time_at_target:.1f}s{obstacle_info}")
             
-            print(f"\n--------------------Rewards--------------------")
-            print(f"Navigation ({navigation_reward:.2f}):")
-            print(f"  - Distance: {nav_details['distance_reward']:.2f}")
-            print(f"  - Approaching: {nav_details['approaching_reward']:.2f}")
-            print(f"  - Position Precision: {nav_details['position_precision_reward']:.2f}")
-            print(f"    * X penalty: {nav_details['x_penalty']:.3f}")
-            print(f"    * Y penalty: {nav_details['y_penalty']:.3f}")
-            print(f"    * Z penalty: {nav_details['z_penalty']:.3f}")
+        #     print(f"\n--------------------Rewards--------------------")
+        #     print(f"Navigation ({navigation_reward:.2f}):")
+        #     print(f"  - Distance: {nav_details['distance_reward']:.2f}")
+        #     print(f"  - Approaching: {nav_details['approaching_reward']:.2f}")
+        #     print(f"  - Position Precision: {nav_details['position_precision_reward']:.2f}")
+        #     print(f"    * X penalty: {nav_details['x_penalty']:.3f}")
+        #     print(f"    * Y penalty: {nav_details['y_penalty']:.3f}")
+        #     print(f"    * Z penalty: {nav_details['z_penalty']:.3f}")
             
-            print(f"Stability ({stability_reward:.2f}):")
-            print(f"  - Attitude: {stab_details['attitude_penalty']:.2f} (RPY: {stab_details['rpy']})")
-            print(f"  - Angular Vel: {stab_details['angular_velocity_reward']:.2f} (|ω|: {stab_details['angular_vel_norm']:.3f})")
-            print(f"  - RPM Smoothness: {stab_details['rpm_smoothness_penalty']:.2f}")
+        #     print(f"Stability ({stability_reward:.2f}):")
+        #     print(f"  - Attitude: {stab_details['attitude_penalty']:.2f} (RPY: {stab_details['rpy']})")
+        #     print(f"  - Angular Vel: {stab_details['angular_velocity_reward']:.2f} (|ω|: {stab_details['angular_vel_norm']:.3f})")
+        #     print(f"  - RPM Smoothness: {stab_details['rpm_smoothness_penalty']:.2f}")
 
-            print(f"Hovering ({hovering_reward:.2f}):")
-            print(f"  - Speed: {hover_details['speed_reward']:.2f} (|v|: {hover_details['velocity_norm']:.3f})")
-            print(f"  - Hover Time: {hover_details['hover_time_reward']:.2f} (in zone: {hover_details['in_hover_zone']})")
+        #     print(f"Hovering ({hovering_reward:.2f}):")
+        #     print(f"  - Speed: {hover_details['speed_reward']:.2f} (|v|: {hover_details['velocity_norm']:.3f})")
+        #     print(f"  - Hover Time: {hover_details['hover_time_reward']:.2f} (in zone: {hover_details['in_hover_zone']})")
             
-            print(f"Obstacles ({obstacle_reward:.2f}):")
+        #     print(f"Obstacles ({obstacle_reward:.2f}):")
 
             
-            print(f"Completion: {completion_reward:.2f}")
-            print(f"TOTAL REWARD: {total_reward:.2f}")
+        #     print(f"Completion: {completion_reward:.2f}")
+        #     print(f"TOTAL REWARD: {total_reward:.2f}")
         
         return total_reward
 

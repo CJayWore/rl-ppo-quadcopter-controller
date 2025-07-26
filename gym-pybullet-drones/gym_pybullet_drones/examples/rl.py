@@ -75,7 +75,7 @@ def get_target_reward(task, act_type):
     elif task == "obstacle":
         return 300.0
     elif task == "unified":  
-        return 30000.0
+        return 50000*2
     else:
         return 300.0
 
@@ -183,14 +183,15 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
                     'MlpPolicy',
                     train_env,
                     learning_rate=learning_rate,
-                    n_steps=256,
-                    batch_size=64,
-                    n_epochs=10,
+                    n_steps=4096,
+                    batch_size=512,
+                    n_epochs=20,
                     gamma=0.99,
                     gae_lambda=0.95,
                     clip_range=0.2,
                     policy_kwargs=policy_kwargs,
-                    verbose=1
+                    verbose=1,
+                    device='cuda' if torch.cuda.is_available() else 'cpu'
                 )
                 
                 # Try to transfer compatible weights
@@ -216,14 +217,15 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
                     'MlpPolicy',
                     train_env,
                     learning_rate=learning_rate,
-                    n_steps=256,
-                    batch_size=64,
-                    n_epochs=10,
+                    n_steps=4096,
+                    batch_size=512,
+                    n_epochs=20,
                     gamma=0.99,
                     gae_lambda=0.95,
                     clip_range=0.2,
                     policy_kwargs=policy_kwargs,
-                    verbose=1
+                    verbose=1,
+                    device='cuda' if torch.cuda.is_available() else 'cpu'
                 )
                 
                 # Copy trained weights
@@ -252,14 +254,15 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
             'MlpPolicy',
             train_env,
             learning_rate=learning_rate,
-            n_steps=256,
-            batch_size=64,
-            n_epochs=10,
+            n_steps=4096,
+            batch_size=512,
+            n_epochs=20,
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
             policy_kwargs=policy_kwargs,
-            verbose=1
+            verbose=1,
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
         )
         
         print(f"   New model info:")
@@ -269,21 +272,35 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
     
     # Set up callbacks
     target_reward = get_target_reward(task, act_type)
-    callback_on_best = StopTrainingOnRewardThreshold(
-        reward_threshold=target_reward,
-        verbose=1
-    )
+
     
-    eval_callback = EvalCallback(
-        eval_env,
-        callback_on_new_best=callback_on_best,
-        verbose=1,
-        best_model_save_path=session_folder + '/',
-        log_path=session_folder + '/',
-        eval_freq=eval_freq,
-        deterministic=True,
-        render=False
-    )
+    if target_reward is not None:
+        callback_on_best = StopTrainingOnRewardThreshold(
+            reward_threshold=target_reward,
+            verbose=1
+        )
+        eval_callback = EvalCallback(
+            eval_env,
+            callback_on_new_best=callback_on_best,
+            verbose=1,
+            best_model_save_path=session_folder + '/',
+            log_path=session_folder + '/',
+            eval_freq=eval_freq,
+            deterministic=True,
+            render=False
+        )
+    else:
+        eval_callback = EvalCallback(
+            eval_env,
+            verbose=1,
+            best_model_save_path=session_folder + '/',
+            log_path=session_folder + '/',
+            eval_freq=eval_freq,
+            deterministic=True,
+            render=False
+        )
+
+    callbacks = [eval_callback]
     
     # Train the model
     total_timesteps = episodes * 1000
