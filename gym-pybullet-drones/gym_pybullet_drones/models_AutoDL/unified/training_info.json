@@ -1,0 +1,11 @@
+{
+  "task": "unified",
+  "trajectory_type": null,
+  "episodes": 10000,
+  "learning_rate": 0.0003,
+  "target_reward": 100000,
+  "timestamp": "07.24.2025_21.53.25",
+  "session_folder": "results/unified/session_07.24.2025_21.53.25",
+  "total_timesteps": 10000000,
+  "enable_obstacles": false
+}
