@@ -75,7 +75,7 @@ def get_target_reward(task, act_type):
     elif task == "obstacle":
         return 300.0
     elif task == "unified":  
-        return 30000.0
+        return 300000.0
     else:
         return 300.0
 
