@@ -534,6 +534,7 @@ def run_evaluation(task, trajectory_type, model_path, output_folder, duration_se
     
     for i in range(int(duration_sec * test_env.CTRL_FREQ)):
         # Get action from model
+        print(f"Input to model: {obs}") 
         action, _states = model.predict(obs, deterministic=True)
         
         # Step environment

@@ -45,6 +45,7 @@ class UnifiedAviary(BaseRLAviary):
         self.HOVER_THRESHOLD = hover_threshold
         self.EPISODE_LEN_SEC = episode_len_sec
         self.ENABLE_OBSTACLES = enable_obstacles
+
         # Task state
         self.START_POS = np.array([0, 0, 1])
         self.TARGET_POS = np.array([3, 3, 1.5])
@@ -68,6 +69,12 @@ class UnifiedAviary(BaseRLAviary):
         self.target_visual_id = None
         self.connection_line_id = None
         self.path_markers = []
+
+        # Camera settings
+        self.camera_follow_enabled = True
+        self.camera_mode = "chase"  # "follow", "chase", "orbit"
+        self.camera_distance = 4.0
+        self.camera_height_offset = 1.5
 
         super().__init__(drone_model=drone_model,
                          num_drones=1,
@@ -116,94 +123,6 @@ class UnifiedAviary(BaseRLAviary):
         print(f"[UnifiedAviary] Original obs dim: {original_obs_dim}")
         print(f"[UnifiedAviary] New obs dim: {new_obs_dim}")
         print(f"[UnifiedAviary] Added: {num_lidar_rays} lidar + {target_info} target")
-
-    def _addObstacles(self):
-        """添加随机障碍物和目标可视化"""
-        # clear existing obstacles
-        for obs_id in self.obstacle_ids:
-            p.removeBody(obs_id, physicsClientId=self.CLIENT)
-        self.obstacle_ids = []
-        self.obstacle_positions = []
-
-        # Randomly place obstacles between start and end points
-        if self.ENABLE_OBSTACLES:
-            print("Adding obstacles...")
-            for i in range(self.NUM_OBSTACLES):
-                max_attempts = 50
-                for attempt in range(max_attempts):
-                    x = np.random.uniform(-1, 4)
-                    y = np.random.uniform(-1, 4)
-                    z = np.random.uniform(0.3, 2.0)
-                    pos = np.array([x, y, z])
-                    
-                    # Ensure obstacles are not too close to start and end points
-                    start_dist = np.linalg.norm(pos - self.START_POS)
-                    target_dist = np.linalg.norm(pos - self.TARGET_POS)
-                    
-                    # Check if the position is too close to existing obstacles
-                    too_close = False
-                    for existing_pos in self.obstacle_positions:
-                        if np.linalg.norm(pos - existing_pos) < self.OBSTACLE_RADIUS * 3:
-                            too_close = True
-                            break
-                    
-                    if (start_dist > 0.8 and target_dist > 0.8 and not too_close):
-                        break
-                
-                # Create obstacles
-                obstacle_collision = p.createCollisionShape(p.GEOM_SPHERE, radius=self.OBSTACLE_RADIUS)
-                obstacle_visual = p.createVisualShape(p.GEOM_SPHERE, 
-                                                    radius=self.OBSTACLE_RADIUS,
-                                                    rgbaColor=[0.8, 0.2, 0.2, 0.8])
-                
-                body_id = p.createMultiBody(baseMass=0,
-                                        baseCollisionShapeIndex=obstacle_collision,
-                                        baseVisualShapeIndex=obstacle_visual,
-                                        basePosition=pos,
-                                        physicsClientId=self.CLIENT)
-                
-                self.obstacle_ids.append(body_id)
-                self.obstacle_positions.append(pos)
-        else:
-            print(f"⭕ No obstacles added - obstacle-free training mode")
-
-        self._visualizeTarget()
-
-    def _visualizeTarget(self):
-        """Visualize the target position and area"""
-        if self.GUI:
-            target_visual = p.createVisualShape(
-                shapeType=p.GEOM_SPHERE,
-                radius=0.1,
-                rgbaColor=[0, 1, 0, 0.8],  # 绿色半透明
-                physicsClientId=self.CLIENT
-            )
-            
-            self.target_visual_id = p.createMultiBody(
-                baseMass=0,
-                baseCollisionShapeIndex=-1,  # No collision shape
-                baseVisualShapeIndex=target_visual,
-                basePosition=self.TARGET_POS,
-                physicsClientId=self.CLIENT
-            )
-            
-            target_area_visual = p.createVisualShape(
-                shapeType=p.GEOM_CYLINDER,
-                radius=self.TARGET_RADIUS,
-                length=0.02,
-                rgbaColor=[0, 1, 0, 0.3],
-                physicsClientId=self.CLIENT
-            )
-            
-            self.target_area_id = p.createMultiBody(
-                baseMass=0,
-                baseCollisionShapeIndex=-1,  # No collision shape
-                baseVisualShapeIndex=target_area_visual,
-                basePosition=self.TARGET_POS,
-                physicsClientId=self.CLIENT
-            )
-
-            self.target_body_ids = [self.target_visual_id, self.target_area_id]
 
     def _get_lidar_readings(self, drone_pos):
         """获取12个方向的激光雷达读数"""
@@ -262,7 +181,7 @@ class UnifiedAviary(BaseRLAviary):
                 base_obs = base_obs.flatten()
         else:
             base_obs = np.array(base_obs).flatten()
-        
+
         # print(f"[DEBUG] Flattened base obs shape: {base_obs.shape}")
         
         state = self._getDroneStateVector(0)
@@ -275,15 +194,254 @@ class UnifiedAviary(BaseRLAviary):
         # print(f"[DEBUG] Relative target shape: {relative_target.shape}")
         
         enhanced_obs = np.concatenate([
-            base_obs,
-            lidar_readings,
-            relative_target
+            base_obs, # base observation: x,y,z, roll, pitch, yaw, vx, vy, vz, angular_velocity_x, angular_velocity_y, angular_velocity_z,
+            lidar_readings, # 12 lidar readings
+            relative_target # relative target position: x, y, z
         ])
         
         # print(f"[DEBUG] Final obs shape: {enhanced_obs.shape}")
         # print(f"[DEBUG] Expected obs space: {self.observation_space.shape}")
         
         return enhanced_obs.astype(np.float32)
+    
+    ########################################################################
+    # Pybullet methods
+    def _drawConnectionLine(self):
+        if self.GUI:
+            drone_state = self._getDroneStateVector(0)
+            drone_pos = drone_state[0:3]
+            
+            if self.connection_line_id is not None:
+                p.removeUserDebugItem(self.connection_line_id, physicsClientId=self.CLIENT)
+            
+            # 根据任务状态选择不同颜色
+            if self.time_at_target >= self.required_hover_time:
+                color = [0, 1, 0]  # 绿色 - 任务完成
+            elif self.time_at_target > 0:
+                color = [1, 1, 0]  # 黄色 - 正在悬停
+            else:
+                color = [0, 0, 1]  # 蓝色 - 导航中
+            
+            self.connection_line_id = p.addUserDebugLine(
+                lineFromXYZ=drone_pos,
+                lineToXYZ=self.TARGET_POS,
+                lineColorRGB=color,
+                lineWidth=3,
+                lifeTime=0.2,
+                physicsClientId=self.CLIENT
+            )
+
+    def _addObstacles(self):
+        """添加随机障碍物和目标可视化"""
+        # clear existing obstacles
+        for obs_id in self.obstacle_ids:
+            p.removeBody(obs_id, physicsClientId=self.CLIENT)
+        self.obstacle_ids = []
+        self.obstacle_positions = []
+
+        # Randomly place obstacles between start and end points
+        if self.ENABLE_OBSTACLES:
+            print("Adding obstacles...")
+            for i in range(self.NUM_OBSTACLES):
+                max_attempts = 50
+                for attempt in range(max_attempts):
+                    x = np.random.uniform(-1, 4)
+                    y = np.random.uniform(-1, 4)
+                    z = np.random.uniform(0.3, 2.0)
+                    pos = np.array([x, y, z])
+                    
+                    # Ensure obstacles are not too close to start and end points
+                    start_dist = np.linalg.norm(pos - self.START_POS)
+                    target_dist = np.linalg.norm(pos - self.TARGET_POS)
+                    
+                    # Check if the position is too close to existing obstacles
+                    too_close = False
+                    for existing_pos in self.obstacle_positions:
+                        if np.linalg.norm(pos - existing_pos) < self.OBSTACLE_RADIUS * 3:
+                            too_close = True
+                            break
+                    
+                    if (start_dist > 0.8 and target_dist > 0.8 and not too_close):
+                        break
+                
+                # Create obstacles
+                obstacle_collision = p.createCollisionShape(p.GEOM_SPHERE, radius=self.OBSTACLE_RADIUS)
+                obstacle_visual = p.createVisualShape(p.GEOM_SPHERE, 
+                                                    radius=self.OBSTACLE_RADIUS,
+                                                    rgbaColor=[0.8, 0.2, 0.2, 0.8])
+                
+                body_id = p.createMultiBody(baseMass=0,
+                                        baseCollisionShapeIndex=obstacle_collision,
+                                        baseVisualShapeIndex=obstacle_visual,
+                                        basePosition=pos,
+                                        physicsClientId=self.CLIENT)
+                
+                self.obstacle_ids.append(body_id)
+                self.obstacle_positions.append(pos)
+        # else:
+            # print(f"⭕ No obstacles added - obstacle-free training mode")
+
+        self._visualizeTarget()
+
+    def _visualizeTarget(self):
+        """Visualize the target position and area"""
+        if self.GUI:
+            target_visual = p.createVisualShape(
+                shapeType=p.GEOM_SPHERE,
+                radius=0.1,
+                rgbaColor=[0, 1, 0, 0.8],  # 绿色半透明
+                physicsClientId=self.CLIENT
+            )
+            
+            self.target_visual_id = p.createMultiBody(
+                baseMass=0,
+                baseCollisionShapeIndex=-1,  # No collision shape
+                baseVisualShapeIndex=target_visual,
+                basePosition=self.TARGET_POS,
+                physicsClientId=self.CLIENT
+            )
+            
+            target_area_visual = p.createVisualShape(
+                shapeType=p.GEOM_CYLINDER,
+                radius=self.TARGET_RADIUS,
+                length=0.02,
+                rgbaColor=[0, 1, 0, 0.3],
+                physicsClientId=self.CLIENT
+            )
+            
+            self.target_area_id = p.createMultiBody(
+                baseMass=0,
+                baseCollisionShapeIndex=-1,  # No collision shape
+                baseVisualShapeIndex=target_area_visual,
+                basePosition=self.TARGET_POS,
+                physicsClientId=self.CLIENT
+            )
+
+            self.target_body_ids = [self.target_visual_id, self.target_area_id]
+
+    def _updateCamera(self):
+        """智能相机跟随系统"""
+        if not self.GUI or not self.camera_follow_enabled:
+            return
+            
+        # 获取无人机状态
+        state = self._getDroneStateVector(0)
+        drone_pos = state[0:3]
+        drone_vel = state[10:13]
+        
+        if self.camera_mode == "follow":
+            # 模式1：第三人称跟随
+            self._followCamera(drone_pos, drone_vel)
+        elif self.camera_mode == "chase":
+            # 模式2：追逐视角（从后方跟随）
+            self._chaseCamera(drone_pos, drone_vel)
+        elif self.camera_mode == "orbit":
+            # 模式3：环绕视角
+            self._orbitCamera(drone_pos)
+    
+    def _followCamera(self, drone_pos, drone_vel):
+        """第三人称跟随相机"""
+        # 相机位置：无人机后方偏上
+        velocity_direction = drone_vel / (np.linalg.norm(drone_vel) + 1e-6)
+        
+        # 如果无人机静止，使用朝向目标的方向
+        if np.linalg.norm(drone_vel) < 0.1:
+            if hasattr(self, 'TARGET_POS'):
+                direction_to_target = self.TARGET_POS - drone_pos
+                velocity_direction = direction_to_target / (np.linalg.norm(direction_to_target) + 1e-6)
+            else:
+                velocity_direction = np.array([1, 0, 0])  # 默认方向
+        
+        # 相机位置在无人机后方
+        camera_offset = -velocity_direction * self.camera_distance
+        camera_offset[2] += self.camera_height_offset  # 添加高度偏移
+        
+        camera_pos = drone_pos + camera_offset
+        
+        # 相机目标：无人机前方一点
+        camera_target = drone_pos + velocity_direction * 2.0
+        
+        # 计算相机角度
+        direction_to_target = camera_target - camera_pos
+        distance = np.linalg.norm(direction_to_target[:2])
+        
+        if distance > 1e-6:
+            yaw = np.degrees(np.arctan2(direction_to_target[1], direction_to_target[0]))
+            pitch = np.degrees(np.arctan2(-direction_to_target[2], distance))
+        else:
+            yaw, pitch = 0, -30
+        
+        p.resetDebugVisualizerCamera(
+            cameraDistance=self.camera_distance,
+            cameraYaw=yaw,
+            cameraPitch=pitch,
+            cameraTargetPosition=drone_pos,
+            physicsClientId=self.CLIENT
+        )
+
+    def _chaseCamera(self, drone_pos, drone_vel):
+        """追逐相机（总是从后方跟随）"""
+        # 相机距离和角度
+        distance = self.camera_distance
+        height_offset = 1.0
+        
+        # 如果有速度，从后方跟随
+        if np.linalg.norm(drone_vel) > 0.1:
+            vel_normalized = drone_vel / np.linalg.norm(drone_vel)
+            yaw = np.degrees(np.arctan2(vel_normalized[1], vel_normalized[0]))
+        else:
+            # 静止时，面向目标
+            if hasattr(self, 'TARGET_POS'):
+                direction = self.TARGET_POS - drone_pos
+                yaw = np.degrees(np.arctan2(direction[1], direction[0]))
+            else:
+                yaw = 0
+        
+        pitch = -25  # 稍微向下俯视
+        
+        camera_target = drone_pos + np.array([0, 0, height_offset])
+        
+        p.resetDebugVisualizerCamera(
+            cameraDistance=distance,
+            cameraYaw=yaw,
+            cameraPitch=pitch,
+            cameraTargetPosition=camera_target,
+            physicsClientId=self.CLIENT
+        )
+
+    def _orbitCamera(self, drone_pos):
+        """环绕相机（围绕无人机旋转）"""
+        # 基于时间的环绕角度
+        orbit_speed = 0.5  # 环绕速度
+        orbit_angle = (self.step_counter * orbit_speed) % 360
+        
+        distance = self.camera_distance * 1.5
+        pitch = -20
+        
+        camera_target = drone_pos + np.array([0, 0, 0.5])
+        
+        p.resetDebugVisualizerCamera(
+            cameraDistance=distance,
+            cameraYaw=orbit_angle,
+            cameraPitch=pitch,
+            cameraTargetPosition=camera_target,
+            physicsClientId=self.CLIENT
+        )
+
+    def toggle_camera_mode(self):
+        """切换相机模式（可以通过键盘调用）"""
+        modes = ["follow", "chase", "orbit"]
+        current_index = modes.index(self.camera_mode)
+        self.camera_mode = modes[(current_index + 1) % len(modes)]
+        print(f"📹 相机模式切换到: {self.camera_mode}")
+
+    def set_camera_distance(self, distance):
+        """设置相机距离"""
+        self.camera_distance = max(1.0, min(10.0, distance))
+        print(f"📹 相机距离设置为: {self.camera_distance:.1f}m")
+
+    #########################################################################
+    # Reward functions
 
     '''
 
@@ -299,6 +457,8 @@ class UnifiedAviary(BaseRLAviary):
 
         distance_reward = 0
         distance_reward = min(1000.0, 10.0 / (1e-6 + current_distance))
+        # //distance_reward = -current_distance**0.5
+
 
         # if current_distance >= 4.0:
         #     distance_reward = 100/(current_distance)  # 基于距离的奖励，距离越近奖励越高
@@ -487,11 +647,11 @@ class UnifiedAviary(BaseRLAviary):
         # 详细调试输出
         if self.step_counter % 100 == 0:
             obstacle_info = f", Obstacles: {len(self.obstacle_positions)}" if self.ENABLE_OBSTACLES else ", No obstacles"
-            print(f"\n--------------------Environments-------------------- "
-                  f"\nTarget: {self.TARGET_POS}, \nDrone Pos: {current_pos}, "
-                  f"\nDistance: {current_distance:.3f},"
-                  f"Speed: {np.linalg.norm(current_vel):.2f}, "
-                  f"Hover time: {self.time_at_target:.1f}s{obstacle_info}")
+            # print(f"\n--------------------Environments-------------------- "
+            #       f"\nTarget: {self.TARGET_POS}, \nDrone Pos: {current_pos}, "
+            #       f"\nDistance: {current_distance:.3f},"
+            #       f"Speed: {np.linalg.norm(current_vel):.2f}, "
+            #       f"Hover time: {self.time_at_target:.1f}s{obstacle_info}")
             
             # print(f"\n--------------------Rewards--------------------")
             # print(f"Navigation ({navigation_reward:.2f}):")
@@ -509,13 +669,13 @@ class UnifiedAviary(BaseRLAviary):
 
             # print(f"Hovering ({hovering_reward:.2f}):")
             # print(f"  - Speed: {hover_details['speed_reward']:.2f} (|v|: {hover_details['velocity_norm']:.3f})")
-            print(f"  - Hover Time: {hover_details['hover_time_reward']:.2f} (in zone: {hover_details['in_hover_zone']})")
+            # print(f"  - Hover Time: {hover_details['hover_time_reward']:.2f} (in zone: {hover_details['in_hover_zone']})")
             
             # print(f"Obstacles ({obstacle_reward:.2f}):")
 
             
             # print(f"Completion: {completion_reward:.2f}")
-            print(f"TOTAL REWARD: {total_reward:.2f}")
+            # print(f"TOTAL REWARD: {total_reward:.2f}")
         
         return total_reward
 
@@ -532,25 +692,25 @@ class UnifiedAviary(BaseRLAviary):
         if self.ENABLE_OBSTACLES:
             for obs_pos in self.obstacle_positions:
                 if np.linalg.norm(current_pos - obs_pos) < self.OBSTACLE_RADIUS + 0.05:
-                    print(f"🚫 Truncated because of Obstacle Hit")
+                    # print(f"🚫 Truncated because of Obstacle Hit")
                     return True
         
         # Border violation detection
         if (current_pos[0] < -2 or current_pos[0] > 5 or 
             current_pos[1] < -2 or current_pos[1] > 5 or
             current_pos[2] < 0.05 or current_pos[2] > 3.5):
-            print(f"🚫 Truncated because of Border Violation")
+            # print(f"🚫 Truncated because of Border Violation")
             return True
         
         # Altitude violation detection
         rpy = state[7:10]
         if abs(rpy[0]) > 1.0 or abs(rpy[1]) > 1.0:  # 57 degrees
-            print(f"🚫 Truncated because of Altitude Violation")
+            # print(f"🚫 Truncated because of Altitude Violation")
             return True
         
         # Time limit detection
         if self.step_counter / self.PYB_FREQ > self.EPISODE_LEN_SEC:
-            print(f"🚫 Truncated because of Time Limit")
+            # print(f"🚫 Truncated because of Time Limit")
             return True
         
         return False
@@ -632,12 +792,12 @@ class UnifiedAviary(BaseRLAviary):
             
             task_completed = self.time_at_target >= self.required_hover_time
 
-            print(f"📊 Episode {self.episode_count} completed:")
-            print(f"   Duration: {episode_duration:.2f}s")
-            print(f"   Hover time: {self.time_at_target:.1f}s")
-            print(f"   Task completed: {'✅ Yes' if task_completed else '❌ No'}")
-            print(f"   Avg time (last 10): {avg_time:.2f}s")
-            print(f"   Total training time: {self.total_training_time/60:.1f}min")
+            # print(f"📊 Episode {self.episode_count} completed:")
+            # print(f"   Duration: {episode_duration:.2f}s")
+            # print(f"   Hover time: {self.time_at_target:.1f}s")
+            # print(f"   Task completed: {'✅ Yes' if task_completed else '❌ No'}")
+            # print(f"   Avg time (last 10): {avg_time:.2f}s")
+            # print(f"   Total training time: {self.total_training_time/60:.1f}min")
             
             # 如果任务完成，记录完成时间
             if task_completed:
@@ -701,32 +861,11 @@ class UnifiedAviary(BaseRLAviary):
         obs, reward, terminated, truncated, info = super().step(action)
         
         # Update visualisation
-        if self.GUI and self.step_counter % 10 == 0:
+        if self.GUI and self.step_counter % 5 == 0:
             self._drawConnectionLine()
+        if self.GUI and self.step_counter % 3 == 0:
+            self._updateCamera()
         
         return obs, reward, terminated, truncated, info
 
-    def _drawConnectionLine(self):
-        if self.GUI:
-            drone_state = self._getDroneStateVector(0)
-            drone_pos = drone_state[0:3]
-            
-            if self.connection_line_id is not None:
-                p.removeUserDebugItem(self.connection_line_id, physicsClientId=self.CLIENT)
-            
-            # 根据任务状态选择不同颜色
-            if self.time_at_target >= self.required_hover_time:
-                color = [0, 1, 0]  # 绿色 - 任务完成
-            elif self.time_at_target > 0:
-                color = [1, 1, 0]  # 黄色 - 正在悬停
-            else:
-                color = [0, 0, 1]  # 蓝色 - 导航中
-            
-            self.connection_line_id = p.addUserDebugLine(
-                lineFromXYZ=drone_pos,
-                lineToXYZ=self.TARGET_POS,
-                lineColorRGB=color,
-                lineWidth=3,
-                lifeTime=0.2,
-                physicsClientId=self.CLIENT
-            )
+    
