@@ -45,6 +45,7 @@ class UnifiedAviary(BaseRLAviary):
         self.HOVER_THRESHOLD = hover_threshold
         self.EPISODE_LEN_SEC = episode_len_sec
         self.ENABLE_OBSTACLES = enable_obstacles
+
         # Task state
         self.START_POS = np.array([0, 0, 1])
         self.TARGET_POS = np.array([3, 3, 1.5])
@@ -81,30 +82,28 @@ class UnifiedAviary(BaseRLAviary):
                          obs=obs,
                          act=act)
         
-        self.target_body_ids = []
-        # # 扩展观察空间以包含环境感知信息
-        # original_obs_dim = self.observation_space.shape[0]
-        # num_lidar_rays = 12  # lidar rays in 12 directions
-        # additional_info = 6    # relative target position(3) + task state information(3)
-        # new_obs_dim = original_obs_dim + num_lidar_rays + additional_info
-        
-        # self.observation_space = spaces.Box(low=-np.inf, 
-        #                                     high=np.inf, 
-        #                                     shape=(new_obs_dim,), 
-        #                                     dtype=np.float32)
+        self.target_body_ids = [] # 用于存储目标位置的可视化 ID
+        self._setupObservationSpace()
 
     def _setupObservationSpace(self):
         """设置扩展的观察空间"""
         # 获取原始观察空间的维度
-        original_obs_dim = self.observation_space.shape[0]
+        original_obs_space = super()._observationSpace()
+    
+        if len(original_obs_space.shape) > 1:
+            # 如果是 (NUM_DRONES, obs_dim) 的形状
+            print(f"1️⃣[UnifiedAviary] Original obs space shape: {original_obs_space.shape}")
+            original_obs_dim = original_obs_space.shape[1]
+        else:
+            print(f"2️⃣[UnifiedAviary] Original obs space shape: {original_obs_space.shape}")
+            original_obs_dim = original_obs_space.shape[0]
         
         # 添加的观察维度
         num_lidar_rays = 12     # 12个方向的激光雷达
         target_info = 3         # 相对目标位置(3)
-        task_state_info = 3     # 任务状态编码(3)
         
         # 计算新的观察空间维度
-        new_obs_dim = original_obs_dim + num_lidar_rays + target_info + task_state_info
+        new_obs_dim = original_obs_dim + num_lidar_rays + target_info
         
         # 重新定义观察空间
         self.observation_space = spaces.Box(
@@ -116,7 +115,7 @@ class UnifiedAviary(BaseRLAviary):
         
         print(f"[UnifiedAviary] Original obs dim: {original_obs_dim}")
         print(f"[UnifiedAviary] New obs dim: {new_obs_dim}")
-        print(f"[UnifiedAviary] Added: {num_lidar_rays} lidar + {target_info} target + {task_state_info} task state")
+        print(f"[UnifiedAviary] Added: {num_lidar_rays} lidar + {target_info} target")
 
     def _addObstacles(self):
         """添加随机障碍物和目标可视化"""
@@ -128,7 +127,7 @@ class UnifiedAviary(BaseRLAviary):
 
         # Randomly place obstacles between start and end points
         if self.ENABLE_OBSTACLES:
-            print("Adding obstacles...")
+            # print("Adding obstacles...")
             for i in range(self.NUM_OBSTACLES):
                 max_attempts = 50
                 for attempt in range(max_attempts):
@@ -165,8 +164,8 @@ class UnifiedAviary(BaseRLAviary):
                 
                 self.obstacle_ids.append(body_id)
                 self.obstacle_positions.append(pos)
-        else:
-            print(f"⭕ No obstacles added - obstacle-free training mode")
+        # else:
+        #     print(f"⭕ No obstacles added - obstacle-free training mode")
 
         self._visualizeTarget()
 
@@ -182,7 +181,7 @@ class UnifiedAviary(BaseRLAviary):
             
             self.target_visual_id = p.createMultiBody(
                 baseMass=0,
-                baseCollisionShapeIndex=-1,  # No collision shape
+                baseCollisionShapeIndex=-1,
                 baseVisualShapeIndex=target_visual,
                 basePosition=self.TARGET_POS,
                 physicsClientId=self.CLIENT
@@ -198,7 +197,7 @@ class UnifiedAviary(BaseRLAviary):
             
             self.target_area_id = p.createMultiBody(
                 baseMass=0,
-                baseCollisionShapeIndex=-1,  # No collision shape
+                baseCollisionShapeIndex=-1,
                 baseVisualShapeIndex=target_area_visual,
                 basePosition=self.TARGET_POS,
                 physicsClientId=self.CLIENT
@@ -252,46 +251,39 @@ class UnifiedAviary(BaseRLAviary):
             self.time_at_target = 0  # 离开目标区域时重置
 
     def _computeObs(self):
-        # """计算增强的观察值"""
-        # # 获取基础观察
-        # base_obs = super()._computeObs()
+        """Override to include lidar and target information in the observation"""
+        # 获取基础观察
+        base_obs = super()._computeObs()
+        # print(f"[DEBUG] Base obs shape: {base_obs.shape}")
         
-        # # 确保base_obs是1维数组
-        # if isinstance(base_obs, np.ndarray):
-        #     if base_obs.ndim > 1:
-        #         base_obs = base_obs.flatten()
-        # else:
-        #     base_obs = np.array(base_obs).flatten()
+        # 确保base_obs是1维数组
+        if isinstance(base_obs, np.ndarray):
+            if base_obs.ndim > 1:
+                base_obs = base_obs.flatten()
+        else:
+            base_obs = np.array(base_obs).flatten()
+
+        # print(f"[DEBUG] Flattened base obs shape: {base_obs.shape}")
         
-        # # 获取当前状态
-        # state = self._getDroneStateVector(0)
-        # current_pos = state[0:3]
+        state = self._getDroneStateVector(0)
+        current_pos = state[0:3]
         
-        # # 获取激光雷达读数
-        # lidar_readings = self._get_lidar_readings(current_pos)
+        lidar_readings = self._get_lidar_readings(current_pos)
+        # print(f"[DEBUG] Lidar readings shape: {lidar_readings.shape}")
         
-        # # 计算相对目标位置
-        # relative_target = self.TARGET_POS - current_pos
+        relative_target = self.TARGET_POS - current_pos
+        # print(f"[DEBUG] Relative target shape: {relative_target.shape}")
         
-        # # 任务状态编码
-        # task_state_encoding = {
-        #     "NAVIGATE": [1, 0, 0],
-        #     "APPROACHING": [0, 1, 0],
-        #     "HOVERING": [0, 0, 1],
-        #     "COMPLETED": [0, 0, 0]
-        # }
-        # task_info = np.array(task_state_encoding[self.TASK_STATE])
+        enhanced_obs = np.concatenate([
+            base_obs, # base observation: x,y,z, roll, pitch, yaw, vx, vy, vz, angular_velocity_x, angular_velocity_y, angular_velocity_z,
+            lidar_readings, # 12 lidar readings
+            relative_target # relative target position: x, y, z
+        ])
         
-        # # 组合观察
-        # enhanced_obs = np.concatenate([
-        #     base_obs,
-        #     lidar_readings,
-        #     relative_target,
-        #     task_info
-        # ])
+        # print(f"[DEBUG] Final obs shape: {enhanced_obs.shape}")
+        # print(f"[DEBUG] Expected obs space: {self.observation_space.shape}")
         
-        # return enhanced_obs.astype(np.float32)
-        return super()._computeObs()
+        return enhanced_obs.astype(np.float32)
 
     '''
 
@@ -306,11 +298,7 @@ class UnifiedAviary(BaseRLAviary):
         current_distance = np.linalg.norm(position_error)
 
         distance_reward = 0
-        if current_distance >0.1:
-            distance_reward = 10/(1e-6 + current_distance)
-        else:
-            distance_reward = 50 # Arrive at target with high reward
-
+        distance_reward = min(1000.0, 10.0 / (1e-6 + current_distance))
         # if current_distance >= 4.0:
         #     distance_reward = 100/(current_distance)  # 基于距离的奖励，距离越近奖励越高
         # else:
@@ -329,7 +317,7 @@ class UnifiedAviary(BaseRLAviary):
         z_penalty = 1.0-np.tanh(k * abs(position_error[2]))
         
         # 给Z轴稍高权重但不过分
-        position_precision_reward = (x_penalty + y_penalty + 1.5 * z_penalty)
+        position_precision_reward = (x_penalty + y_penalty + z_penalty) * 60
 
         height_safety_reward = 0
         if current_pos[2] < 0.3:  # 危险低高度
@@ -404,13 +392,13 @@ class UnifiedAviary(BaseRLAviary):
         #     speed_reward = 100.0/(1e-6 + velocity_norm)  # 接近目标时速度越低奖励越高
         
         ################################################################################################
-        MAX_HOVER_REWARD = 10.0  # Max reward for a perfect hover at the target center.
+        MAX_HOVER_REWARD = 100.0  # Max reward for a perfect hover at the target center.
         
         # We set the distance decay so the reward is half its max at the HOVER_THRESHOLD boundary.
         DISTANCE_DECAY = np.log(2) / (self.HOVER_THRESHOLD**2)
         
         # This controls how strongly velocity is penalized. Higher value = more penalty for speed.
-        VELOCITY_DECAY = 3.0
+        VELOCITY_DECAY = 0.5
 
         # Calculate a distance-based factor (0 to 1) using a Gaussian function.
         distance_factor = np.exp(-DISTANCE_DECAY * distance_to_target**2)
@@ -443,23 +431,31 @@ class UnifiedAviary(BaseRLAviary):
         state = self._getDroneStateVector(0)
         current_pos = state[0:3]
         
-        obstacle_penalty = 0
+        obstacle_reward = 0
         if self.ENABLE_OBSTACLES and len(self.obstacle_positions) > 0:
+            min_dist_to_obstacle = min([np.linalg.norm(current_pos - obs_pos) for obs_pos in self.obstacle_positions])
+            
+            ideal_safety_distance = self.OBSTACLE_RADIUS + 0.5
+            
+            # 使用高斯函数给予一个正向的安全区域奖励
+            # 当无人机处于理想距离时，奖励最高
+            safety_bonus = 5.0 * np.exp(-((min_dist_to_obstacle - ideal_safety_distance)**2) / (2 * (ideal_safety_distance/2)**2))
+            obstacle_reward += safety_bonus
+
             critical_distance = self.OBSTACLE_RADIUS + 0.3
             for obs_pos in self.obstacle_positions:
                 dist_to_obstacle = np.linalg.norm(current_pos - obs_pos)
                 if dist_to_obstacle < critical_distance:
                     # 使用指数函数创建强烈的避障信号
                     penalty_factor = np.exp(-(dist_to_obstacle - self.OBSTACLE_RADIUS) * 5.0)
-                    obstacle_penalty -= 10.0 * penalty_factor
+                    obstacle_reward -= 10.0 * penalty_factor
                     
                     # 如果非常接近障碍物，给予额外的强烈惩罚
                     if dist_to_obstacle < self.OBSTACLE_RADIUS + 0.05:
-                        obstacle_penalty -= 100.0
+                        obstacle_reward -= 100.0
         
-        return obstacle_penalty
+        return obstacle_reward
     
-
     def _computeReward(self):
         state = self._getDroneStateVector(0)
         current_pos = state[0:3]
@@ -489,13 +485,13 @@ class UnifiedAviary(BaseRLAviary):
         )
 
         # 详细调试输出
-        # if self.step_counter % 100 == 0:
-        #     obstacle_info = f", Obstacles: {len(self.obstacle_positions)}" if self.ENABLE_OBSTACLES else ", No obstacles"
-        #     print(f"\n--------------------Environments-------------------- "
-        #           f"\nTarget: {self.TARGET_POS}, \nDrone Pos: {current_pos}, "
-        #           f"\nDistance: {current_distance:.3f},"
-        #           f"Speed: {np.linalg.norm(current_vel):.2f}, "
-        #           f"Hover time: {self.time_at_target:.1f}s{obstacle_info}")
+        if self.step_counter % 100 == 0:
+            obstacle_info = f", Obstacles: {len(self.obstacle_positions)}" if self.ENABLE_OBSTACLES else ", No obstacles"
+            print(f"\n--------------------Environments-------------------- "
+                  f"\nTarget: {self.TARGET_POS}, \nDrone Pos: {current_pos}, "
+                  f"\nDistance: {current_distance:.3f},"
+                  f"Speed: {np.linalg.norm(current_vel):.2f}, "
+                  f"Hover time: {self.time_at_target:.1f}s{obstacle_info}")
             
         #     print(f"\n--------------------Rewards--------------------")
         #     print(f"Navigation ({navigation_reward:.2f}):")
@@ -536,25 +532,25 @@ class UnifiedAviary(BaseRLAviary):
         if self.ENABLE_OBSTACLES:
             for obs_pos in self.obstacle_positions:
                 if np.linalg.norm(current_pos - obs_pos) < self.OBSTACLE_RADIUS + 0.05:
-                    print(f"🚫 Truncated because of Obstacle Hit")
+                    # print(f"🚫 Truncated because of Obstacle Hit")
                     return True
         
         # Border violation detection
         if (current_pos[0] < -2 or current_pos[0] > 5 or 
             current_pos[1] < -2 or current_pos[1] > 5 or
             current_pos[2] < 0.05 or current_pos[2] > 3.5):
-            print(f"🚫 Truncated because of Border Violation")
+            # print(f"🚫 Truncated because of Border Violation")
             return True
         
         # Altitude violation detection
         rpy = state[7:10]
         if abs(rpy[0]) > 1.0 or abs(rpy[1]) > 1.0:  # 57 degrees
-            print(f"🚫 Truncated because of Altitude Violation")
+            # print(f"🚫 Truncated because of Altitude Violation")
             return True
         
         # Time limit detection
         if self.step_counter / self.PYB_FREQ > self.EPISODE_LEN_SEC:
-            print(f"🚫 Truncated because of Time Limit")
+            # print(f"🚫 Truncated because of Time Limit")
             return True
         
         return False
@@ -636,12 +632,12 @@ class UnifiedAviary(BaseRLAviary):
             
             task_completed = self.time_at_target >= self.required_hover_time
 
-            print(f"📊 Episode {self.episode_count} completed:")
-            print(f"   Duration: {episode_duration:.2f}s")
-            print(f"   Hover time: {self.time_at_target:.1f}s")
-            print(f"   Task completed: {'✅ Yes' if task_completed else '❌ No'}")
-            print(f"   Avg time (last 10): {avg_time:.2f}s")
-            print(f"   Total training time: {self.total_training_time/60:.1f}min")
+            # print(f"📊 Episode {self.episode_count} completed:")
+            # print(f"   Duration: {episode_duration:.2f}s")
+            # print(f"   Hover time: {self.time_at_target:.1f}s")
+            # print(f"   Task completed: {'✅ Yes' if task_completed else '❌ No'}")
+            # print(f"   Avg time (last 10): {avg_time:.2f}s")
+            # print(f"   Total training time: {self.total_training_time/60:.1f}min")
             
             # 如果任务完成，记录完成时间
             if task_completed:

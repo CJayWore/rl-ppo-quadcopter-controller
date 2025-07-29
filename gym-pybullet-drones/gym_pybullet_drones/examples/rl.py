@@ -41,6 +41,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold
 from stable_baselines3.common.evaluation import evaluate_policy
+from stable_baselines3.common.vec_env import VecNormalize
 
 from gym_pybullet_drones.utils.Logger import Logger
 from gym_pybullet_drones.envs.HoverAviary import HoverAviary
@@ -75,7 +76,7 @@ def get_target_reward(task, act_type):
     elif task == "obstacle":
         return 300.0
     elif task == "unified":  
-        return 50000*2
+        return 100000*5
     else:
         return 300.0
 
@@ -144,12 +145,21 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
     train_env = make_vec_env(
         lambda: create_environment(task, trajectory_type, **env_kwargs),
         n_envs=16,
-        seed=0
+        # seed=0
     )
     
+    # Wrap the training environment with VecNormalize
+    train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, gamma=0.99)
+
     # Create evaluation environment
-    eval_env = create_environment(task, trajectory_type, **env_kwargs)
-    
+    eval_env = make_vec_env(
+        lambda: create_environment(task, trajectory_type, **env_kwargs),
+        n_envs=1,
+        # seed=42
+    )
+    # Wrap the evaluation environment with VecNormalize
+    eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, training=False, gamma=0.99)
+
     # Check environment spaces
     print(f'[INFO] Action space: {train_env.action_space}')
     print(f'[INFO] Observation space: {train_env.observation_space}')
@@ -354,6 +364,11 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
         model.save(main_best_path)
         print(f"   Current model saved as best: {main_best_path}")
     
+    # Save the VecNormalize statistics
+    stats_path = os.path.join(output_path, "vec_normalize.pkl")
+    train_env.save(stats_path)
+    print(f"   Normalization stats saved to: {stats_path}")
+
     # Save training info
     training_info = {
         'task': task,
@@ -467,6 +482,13 @@ def run_evaluation(task, trajectory_type, model_path, output_folder, duration_se
     print(f"   Starting evaluation for {task} task...")
     print(f"   Model path: {model_path}")
     
+    # Find the path for the normalization stats
+    stats_path = os.path.join(os.path.dirname(model_path), "vec_normalize.pkl")
+    if not os.path.exists(stats_path):
+        print(f"❌ VecNormalize stats not found at {stats_path}")
+        print(f"   Please train a model first to generate the stats file.")
+        return
+
     # Load model
     if not os.path.exists(model_path):
         print(f"❌ Model file not found: {model_path}")
@@ -511,12 +533,24 @@ def run_evaluation(task, trajectory_type, model_path, output_folder, duration_se
     
     print(f"🔧 Environment parameters: {env_kwargs}")
 
-    test_env = create_environment(task, trajectory_type, **env_kwargs)
+    # Create test environment and load normalization stats
+    test_env_raw = create_environment(task, trajectory_type, **env_kwargs)
+    test_env = VecNormalize.load(stats_path, test_env_raw)
     
-    # Create no-GUI environment for evaluation
+    # IMPORTANT: Set to evaluation mode
+    test_env.training = False
+    # IMPORTANT: Do not normalize rewards during evaluation
+    test_env.norm_reward = False
+    
+    print(f"✅ Normalization stats loaded from {stats_path}")
+
+    # Create no-GUI environment for policy evaluation
     env_kwargs_nogui = env_kwargs.copy()
     env_kwargs_nogui.update({'gui': False, 'record': False})
-    test_env_nogui = create_environment(task, trajectory_type, **env_kwargs_nogui)
+    test_env_nogui_raw = create_environment(task, trajectory_type, **env_kwargs_nogui)
+    test_env_nogui = VecNormalize.load(stats_path, test_env_nogui_raw)
+    test_env_nogui.training = False
+    test_env_nogui.norm_reward = False
     
     # Evaluate policy
     print("   Evaluating policy performance...")
@@ -551,6 +585,7 @@ def run_evaluation(task, trajectory_type, model_path, output_folder, duration_se
     
     for i in range(int(duration_sec * test_env.CTRL_FREQ)):
         # Get action from model
+        print(f"Observation space: {obs.shape}\n{obs}")
         action, _states = model.predict(obs, deterministic=True)
         
         # Step environment
