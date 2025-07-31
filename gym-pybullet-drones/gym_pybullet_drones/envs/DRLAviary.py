@@ -6,7 +6,7 @@ from gymnasium import spaces
 from gym_pybullet_drones.envs.BaseRLAviary import BaseRLAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics, ActionType, ObservationType
 
-class UnifiedAviary(BaseRLAviary):
+class DRLAviary(BaseRLAviary):
     """
     Unified RL environment: Navigate to target while avoiding obstacles and hover at destination.
     
@@ -98,10 +98,10 @@ class UnifiedAviary(BaseRLAviary):
     
         if len(original_obs_space.shape) > 1:
             # 如果是 (NUM_DRONES, obs_dim) 的形状
-            print(f"1️⃣[UnifiedAviary] Original obs space shape: {original_obs_space.shape}")
+            print(f"1️⃣[DRLAviary] Original obs space shape: {original_obs_space.shape}")
             original_obs_dim = original_obs_space.shape[1]
         else:
-            print(f"2️⃣[UnifiedAviary] Original obs space shape: {original_obs_space.shape}")
+            print(f"2️⃣[DRLAviary] Original obs space shape: {original_obs_space.shape}")
             # 如果是 (obs_dim,) 的形状
             original_obs_dim = original_obs_space.shape[0]
         
@@ -120,9 +120,9 @@ class UnifiedAviary(BaseRLAviary):
             dtype=np.float32
         )
         
-        print(f"[UnifiedAviary] Original obs dim: {original_obs_dim}")
-        print(f"[UnifiedAviary] New obs dim: {new_obs_dim}")
-        print(f"[UnifiedAviary] Added: {num_lidar_rays} lidar + {target_info} target")
+        print(f"[DRLAviary] Original obs dim: {original_obs_dim}")
+        print(f"[DRLAviary] New obs dim: {new_obs_dim}")
+        print(f"[DRLAviary] Added: {num_lidar_rays} lidar + {target_info} target")
 
     def _get_lidar_readings(self, drone_pos):
         """获取12个方向的激光雷达读数"""

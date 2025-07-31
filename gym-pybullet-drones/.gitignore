@@ -4,7 +4,8 @@ examples/debug.py
 examples/test.py
 
 # NumPy saves and videos
-results/
+results/*
+!results/unified
 tmp/
 
 # Learning results

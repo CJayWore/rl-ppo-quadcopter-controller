@@ -37,16 +37,18 @@ import argparse
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import subprocess
+import platform
+
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold
 from stable_baselines3.common.evaluation import evaluate_policy
+from stable_baselines3.common.vec_env import VecNormalize
 
 from gym_pybullet_drones.utils.Logger import Logger
-from gym_pybullet_drones.envs.HoverAviary import HoverAviary
-from gym_pybullet_drones.envs.TrajectoryAviary import TrajectoryAviary
-from gym_pybullet_drones.envs.ObstacleAviary import ObstacleAviary
-from gym_pybullet_drones.envs.UnifiedAviary import UnifiedAviary
+
+from gym_pybullet_drones.envs.DRLAviary import UnifiedAviary
 from gym_pybullet_drones.utils.utils import sync, str2bool
 from gym_pybullet_drones.utils.enums import ObservationType, ActionType
 
@@ -66,6 +68,58 @@ DEFAULT_LEARNING_RATE = 3e-4
 DEFAULT_EVAL_FREQ = 2000
 DEFAULT_DURATION_SEC = 30
 
+def send_system_notification(title, message, urgent=False):
+    """发送系统通知（支持 macOS 和跨设备同步）"""
+    try:
+        if platform.system() == "Darwin":  # macOS
+            sound_name = "Glass" if urgent else "Blow"
+            
+            applescript = f'''
+            display notification "{message}" ¬
+                with title "{title}" ¬
+                subtitle "训练状态更新" ¬
+                sound name "{sound_name}"
+            '''
+            
+            subprocess.run([
+                'osascript', '-e', applescript
+            ], check=True)
+            
+            print("✅ macOS 系统通知发送成功！")
+            print("📱 如果设置正确，iPhone 应该也会收到通知")
+            return True
+            
+        else:
+            print("⚠️  当前系统不支持 macOS 通知")
+            return False
+            
+    except Exception as e:
+        print(f"❌ 系统通知发送失败: {e}")
+        return False
+
+def send_training_completion_notification(task, episodes, final_reward, target_reward, training_time, enable_obstacles=None):
+    """发送训练完成的专用通知"""
+    if isinstance(final_reward, str) or final_reward == "未知":
+        success = False
+    else:
+        try:
+            success = float(final_reward) >= target_reward
+        except (ValueError, TypeError):
+            success = False
+    status_emoji = "🎉" if success else "⚠️"
+    
+    title = f"{status_emoji} 无人机训练完成"
+    
+    obstacle_info = ""
+    if task == "unified" and enable_obstacles is not None:
+        obstacle_info = f"\\n障碍物: {'启用' if enable_obstacles else '禁用'}"
+    
+    message = f"任务: {task.upper()}\\n轮数: {episodes}\\n性能: {final_reward}/{target_reward}\\n用时: {training_time/3600:.1f}h{obstacle_info}"
+    
+    success_sent = send_system_notification(title, message, urgent=success)
+    
+    return success_sent
+
 def get_target_reward(task, act_type):
     """Get target reward based on task and action type."""
     if task == "hover":
@@ -75,27 +129,23 @@ def get_target_reward(task, act_type):
     elif task == "obstacle":
         return 300.0
     elif task == "unified":  
-        return 300000.0
+        return 500000.0
     else:
         return 300.0
 
 def create_environment(task, trajectory_type="circle", **kwargs):
     """Create environment based on task type."""
-    if task == "hover":
-        return HoverAviary(**kwargs)
-    elif task == "trajectory":
-        return TrajectoryAviary(trajectory_type=trajectory_type, **kwargs)
-    elif task == "obstacle":
-        return ObstacleAviary(**kwargs)
-    elif task == "unified":  # 新增统一任务
+    if task == "unified":  # 新增统一任务
         return UnifiedAviary(**kwargs)
     else:
         raise ValueError(f"Unknown task: {task}")
 
 def run_training(task, trajectory_type, output_folder, episodes, learning_rate, eval_freq, 
-                load_model, gui, record_video, obs_type, act_type, colab, enable_obstacles=True):
+                load_model, gui, record_video, obs_type, act_type, colab, enable_obstacles=True, notify_email=None):
     """Run training for specified task."""
     
+    training_start_time = time.time()
+
     # Create task-specific output folder (without timestamp)
     task_folder = f"{task}_{trajectory_type}" if task == "trajectory" else task
     output_path = os.path.join(output_folder, task_folder)
@@ -141,15 +191,51 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
         })
     
     # Create vectorized training environment
-    train_env = make_vec_env(
+    train_env_raw = make_vec_env(
         lambda: create_environment(task, trajectory_type, **env_kwargs),
         n_envs=1,
-        seed=0
+        # seed=0
     )
     
+    # Wrap the training environment with VecNormalize
+    train_env = VecNormalize(train_env_raw, norm_obs=True, norm_reward=True, gamma=0.99)
+
     # Create evaluation environment
-    eval_env = create_environment(task, trajectory_type, **env_kwargs)
-    
+    eval_env_raw = make_vec_env(
+        lambda: create_environment(task, trajectory_type, **env_kwargs),
+        n_envs=1,
+    )
+
+    existing_stats_path = os.path.join(output_path, "vec_normalize.pkl")
+
+    # Wrap the evaluation environment with VecNormalize
+    if load_model and os.path.exists(existing_stats_path):
+        print(f"📊 Loading existing VecNormalize stats from: {existing_stats_path}")
+        try:
+            # 加载现有的归一化统计
+            train_env = VecNormalize.load(existing_stats_path, train_env_raw)
+            train_env.training = True  # 确保训练模式
+            train_env.norm_reward = True
+            
+            eval_env = VecNormalize.load(existing_stats_path, eval_env_raw)
+            eval_env.training = False  # 评估模式
+            eval_env.norm_reward = False
+            
+            print("✅ Existing VecNormalize stats loaded successfully!")
+            print(f"   Observation count: {train_env.obs_rms.count}")
+            print(f"   Return count: {train_env.ret_rms.count}")
+            
+        except Exception as e:
+            print(f"⚠️  Could not load existing VecNormalize stats: {e}")
+            print("   Creating new VecNormalize...")
+            train_env = VecNormalize(train_env_raw, norm_obs=True, norm_reward=True, gamma=0.99)
+            eval_env = VecNormalize(eval_env_raw, norm_obs=True, norm_reward=False, training=False, gamma=0.99)
+    else:
+        # 创建新的 VecNormalize
+        print("📊 Creating new VecNormalize statistics...")
+        train_env = VecNormalize(train_env_raw, norm_obs=True, norm_reward=True, gamma=0.99)
+        eval_env = VecNormalize(eval_env_raw, norm_obs=True, norm_reward=False, training=False, gamma=0.99)
+
     # Check environment spaces
     print(f'[INFO] Action space: {train_env.action_space}')
     print(f'[INFO] Observation space: {train_env.observation_space}')
@@ -184,13 +270,17 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
                     train_env,
                     learning_rate=learning_rate,
                     n_steps=2048,
-                    batch_size=64,
+                    batch_size=128,
                     n_epochs=10,
                     gamma=0.99,
                     gae_lambda=0.95,
                     clip_range=0.2,
                     policy_kwargs=policy_kwargs,
-                    verbose=1
+                    verbose=1,
+                    device='auto',
+                    ent_coef=0.01,       # 熵系数，鼓励探索
+                    vf_coef=0.5,         # 价值函数系数
+                    max_grad_norm=0.5   # 梯度裁剪，防止梯度爆炸
                 )
                 
                 # Try to transfer compatible weights
@@ -217,13 +307,17 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
                     train_env,
                     learning_rate=learning_rate,
                     n_steps=2048,
-                    batch_size=64,
+                    batch_size=128,
                     n_epochs=10,
                     gamma=0.99,
                     gae_lambda=0.95,
                     clip_range=0.2,
                     policy_kwargs=policy_kwargs,
-                    verbose=1
+                    verbose=1,
+                    device='auto',
+                    ent_coef=0.01,       # 熵系数，鼓励探索
+                    vf_coef=0.5,         # 价值函数系数
+                    max_grad_norm=0.5   # 梯度裁剪，防止梯度爆炸
                 )
                 
                 # Copy trained weights
@@ -253,13 +347,17 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
             train_env,
             learning_rate=learning_rate,
             n_steps=2048,
-            batch_size=64,
+            batch_size=128,
             n_epochs=10,
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
             policy_kwargs=policy_kwargs,
-            verbose=1
+            verbose=1,
+            device='auto',
+            ent_coef=0.01,       # 熵系数，鼓励探索
+            vf_coef=0.5,         # 价值函数系数
+            max_grad_norm=0.5   # 梯度裁剪，防止梯度爆炸
         )
         
         print(f"   New model info:")
@@ -282,7 +380,7 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
         log_path=session_folder + '/',
         eval_freq=eval_freq,
         deterministic=True,
-        render=False
+        render=False,
     )
     
     # Train the model
@@ -318,9 +416,7 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
             json.dump(stats, f, indent=2)
         print(f"📊 Timing statistics saved to: {stats_file}")
 
-    # Close environments
-    train_env.close()
-    eval_env.close()
+    
     
     # Only save best model to main folder
     session_best_path = os.path.join(session_folder, 'best_model.zip')
@@ -337,6 +433,19 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
         model.save(main_best_path)
         print(f"   Current model saved as best: {main_best_path}")
     
+    # Save the VecNormalize statistics
+    main_stats_path = os.path.join(output_path, "vec_normalize.pkl")
+    session_stats_path = os.path.join(session_folder, "vec_normalize.pkl")
+
+    train_env.save(main_stats_path)
+    print(f"✅ Main stats saved to: {main_stats_path}")
+    train_env.save(session_stats_path)
+    print(f"✅ Session stats saved to: {session_stats_path}")
+
+    # Close environments
+    train_env.close()
+    eval_env.close()
+
     # Save training info
     training_info = {
         'task': task,
@@ -382,12 +491,42 @@ def run_training(task, trajectory_type, output_folder, episodes, learning_rate, 
             
             if not colab:
                 plt.show()
+
+            # 计算训练时长
+            training_duration = time.time() - training_start_time
             
+            # 获取最终性能
+            final_performance = "未知"
+            if len(results) > 0:
+                final_performance = f"{results[-1][0]:.1f}"
+            
+            # 发送系统通知
+            send_training_completion_notification(
+                task=task,
+                episodes=episodes,
+                final_reward=final_performance,
+                target_reward=target_reward,
+                training_time=training_duration,
+                enable_obstacles=enable_obstacles if task == "unified" else None
+            )
+
             # Print final statistics
             if len(results) > 0:
                 print(f"   Final performance: {results[-1][0]:.2f} reward")
                 print(f"   Target reward: {target_reward}")
                 print(f"{'✅ Target reached!' if results[-1][0] >= target_reward else '❌ Target not reached'}")
+    
+    else:
+        # ✅ 如果没有评估文件，仍然发送通知
+        training_duration = time.time() - training_start_time
+        send_training_completion_notification(
+            task=task,
+            episodes=episodes,
+            final_reward="未知",
+            target_reward=target_reward,
+            training_time=training_duration,
+            enable_obstacles=enable_obstacles if task == "unified" else None
+        )
     
     print(f"\n✅ Training completed!")
     print(f"   Best model saved to: {main_best_path}")
@@ -450,6 +589,13 @@ def run_evaluation(task, trajectory_type, model_path, output_folder, duration_se
     print(f"   Starting evaluation for {task} task...")
     print(f"   Model path: {model_path}")
     
+    # Find the path for the normalization stats
+    stats_path = os.path.join(os.path.dirname(model_path), "vec_normalize.pkl")
+    if not os.path.exists(stats_path):
+        print(f"❌ VecNormalize stats not found at {stats_path}")
+        print(f"   Please train a model first to generate the stats file.")
+        return
+
     # Load model
     if not os.path.exists(model_path):
         print(f"❌ Model file not found: {model_path}")
@@ -494,12 +640,24 @@ def run_evaluation(task, trajectory_type, model_path, output_folder, duration_se
     
     print(f"🔧 Environment parameters: {env_kwargs}")
 
-    test_env = create_environment(task, trajectory_type, **env_kwargs)
+    # Create test environment and load normalization stats
+    test_env_raw = create_environment(task, trajectory_type, **env_kwargs)
+    test_env = VecNormalize.load(stats_path, test_env_raw)
     
-    # Create no-GUI environment for evaluation
+    # IMPORTANT: Set to evaluation mode
+    test_env.training = False
+    # IMPORTANT: Do not normalize rewards during evaluation
+    test_env.norm_reward = False
+    
+    print(f"✅ Normalization stats loaded from {stats_path}")
+
+    # Create no-GUI environment for policy evaluation
     env_kwargs_nogui = env_kwargs.copy()
     env_kwargs_nogui.update({'gui': False, 'record': False})
-    test_env_nogui = create_environment(task, trajectory_type, **env_kwargs_nogui)
+    test_env_nogui_raw = create_environment(task, trajectory_type, **env_kwargs_nogui)
+    test_env_nogui = VecNormalize.load(stats_path, test_env_nogui_raw)
+    test_env_nogui.training = False
+    test_env_nogui.norm_reward = False
     
     # Evaluate policy
     print("   Evaluating policy performance...")
@@ -627,7 +785,7 @@ def run(task=DEFAULT_TASK, trajectory_type=DEFAULT_TRAJECTORY_TYPE, train_mode=D
         episodes=DEFAULT_EPISODES, learning_rate=DEFAULT_LEARNING_RATE, eval_freq=DEFAULT_EVAL_FREQ,
         load_model=None, output_folder=DEFAULT_OUTPUT_FOLDER, duration_sec=DEFAULT_DURATION_SEC,
         gui=DEFAULT_GUI, record_video=DEFAULT_RECORD_VIDEO, obs_type=DEFAULT_OBS, 
-        act_type=DEFAULT_ACT, colab=DEFAULT_COLAB, list_models=False, enable_obstacles=True):
+        act_type=DEFAULT_ACT, colab=DEFAULT_COLAB, list_models=False, enable_obstacles=True,notify_email=None):
     """Main function to run training or evaluation."""
     
     # List available models if requested
@@ -659,7 +817,8 @@ def run(task=DEFAULT_TASK, trajectory_type=DEFAULT_TRAJECTORY_TYPE, train_mode=D
             obs_type=obs_type,
             act_type=act_type,
             colab=colab,
-            enable_obstacles=enable_obstacles
+            enable_obstacles=enable_obstacles,
+            notify_email=notify_email
         )
         
         if not colab:
@@ -742,11 +901,9 @@ if __name__ == '__main__':
                     help='List all available trained models')
     parser.add_argument('--enable_obstacles', default=True, type=str2bool,
                        help='Whether to enable obstacles for unified task (default: True)')
-    
-
-    
+    parser.add_argument('--notify_email', default=None, type=str,
+                       help='Email address to send notification when training completes')
     
     ARGS = parser.parse_args()
     
-    # Run the main function
     run(**vars(ARGS))
