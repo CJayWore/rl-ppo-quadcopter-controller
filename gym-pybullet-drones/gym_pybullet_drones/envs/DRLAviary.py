@@ -96,13 +96,8 @@ class DRLAviary(BaseRLAviary):
                          obs=obs,
                          act=act)
         
-<<<<<<< HEAD:gym-pybullet-drones/gym_pybullet_drones/envs/UnifiedAviary.py
-        self.target_body_ids = [] # 用于存储目标位置的可视化 ID
-        self._setupObservationSpace()
-=======
         self.target_body_ids = []
         self._setupObservationSpace()  # 设置扩展的观察空间
->>>>>>> MBA:gym-pybullet-drones/gym_pybullet_drones/envs/DRLAviary.py
 
     def _setupObservationSpace(self):
         """设置扩展的观察空间"""
@@ -111,18 +106,11 @@ class DRLAviary(BaseRLAviary):
     
         if len(original_obs_space.shape) > 1:
             # 如果是 (NUM_DRONES, obs_dim) 的形状
-<<<<<<< HEAD:gym-pybullet-drones/gym_pybullet_drones/envs/UnifiedAviary.py
-            print(f"1️⃣[UnifiedAviary] Original obs space shape: {original_obs_space.shape}")
-            original_obs_dim = original_obs_space.shape[1]
-        else:
-            print(f"2️⃣[UnifiedAviary] Original obs space shape: {original_obs_space.shape}")
-=======
             print(f"1️⃣[DRLAviary] Original obs space shape: {original_obs_space.shape}")
             original_obs_dim = original_obs_space.shape[1]
         else:
             print(f"2️⃣[DRLAviary] Original obs space shape: {original_obs_space.shape}")
             # 如果是 (obs_dim,) 的形状
->>>>>>> MBA:gym-pybullet-drones/gym_pybullet_drones/envs/DRLAviary.py
             original_obs_dim = original_obs_space.shape[0]
         
         # 添加的观察维度
@@ -140,11 +128,6 @@ class DRLAviary(BaseRLAviary):
             dtype=np.float32
         )
         
-<<<<<<< HEAD:gym-pybullet-drones/gym_pybullet_drones/envs/UnifiedAviary.py
-        print(f"[UnifiedAviary] Original obs dim: {original_obs_dim}")
-        print(f"[UnifiedAviary] New obs dim: {new_obs_dim}")
-        print(f"[UnifiedAviary] Added: {num_lidar_rays} lidar + {target_info} target")
-=======
         print(f"[DRLAviary] Original obs dim: {original_obs_dim}")
         print(f"[DRLAviary] New obs dim: {new_obs_dim}")
         print(f"[DRLAviary] Added: {num_lidar_rays} lidar + {target_info} target")
@@ -255,7 +238,6 @@ class DRLAviary(BaseRLAviary):
                 lifeTime=0.2,
                 physicsClientId=self.CLIENT
             )
->>>>>>> MBA:gym-pybullet-drones/gym_pybullet_drones/envs/DRLAviary.py
 
     def _addObstacles(self):
         """添加随机障碍物和目标可视化"""
@@ -305,11 +287,7 @@ class DRLAviary(BaseRLAviary):
                 self.obstacle_ids.append(body_id)
                 self.obstacle_positions.append(pos)
         # else:
-<<<<<<< HEAD:gym-pybullet-drones/gym_pybullet_drones/envs/UnifiedAviary.py
-        #     print(f"⭕ No obstacles added - obstacle-free training mode")
-=======
             # print(f"⭕ No obstacles added - obstacle-free training mode")
->>>>>>> MBA:gym-pybullet-drones/gym_pybullet_drones/envs/DRLAviary.py
 
         self._visualizeTarget()
 
@@ -464,42 +442,6 @@ class DRLAviary(BaseRLAviary):
         self.last_camera_yaw = smooth_yaw
         self.last_camera_pitch = smooth_pitch
 
-<<<<<<< HEAD:gym-pybullet-drones/gym_pybullet_drones/envs/UnifiedAviary.py
-    def _computeObs(self):
-        """Override to include lidar and target information in the observation"""
-        # 获取基础观察
-        base_obs = super()._computeObs()
-        # print(f"[DEBUG] Base obs shape: {base_obs.shape}")
-        
-        # 确保base_obs是1维数组
-        if isinstance(base_obs, np.ndarray):
-            if base_obs.ndim > 1:
-                base_obs = base_obs.flatten()
-        else:
-            base_obs = np.array(base_obs).flatten()
-
-        # print(f"[DEBUG] Flattened base obs shape: {base_obs.shape}")
-        
-        state = self._getDroneStateVector(0)
-        current_pos = state[0:3]
-        
-        lidar_readings = self._get_lidar_readings(current_pos)
-        # print(f"[DEBUG] Lidar readings shape: {lidar_readings.shape}")
-        
-        relative_target = self.TARGET_POS - current_pos
-        # print(f"[DEBUG] Relative target shape: {relative_target.shape}")
-        
-        enhanced_obs = np.concatenate([
-            base_obs, # base observation: x,y,z, roll, pitch, yaw, vx, vy, vz, angular_velocity_x, angular_velocity_y, angular_velocity_z,
-            lidar_readings, # 12 lidar readings
-            relative_target # relative target position: x, y, z
-        ])
-        
-        # print(f"[DEBUG] Final obs shape: {enhanced_obs.shape}")
-        # print(f"[DEBUG] Expected obs space: {self.observation_space.shape}")
-        
-        return enhanced_obs.astype(np.float32)
-=======
     def _chaseCamera(self, drone_pos, drone_vel):
         """追逐相机（总是从后方跟随）- 平滑版本"""
         # 计算目标角度
@@ -693,7 +635,6 @@ class DRLAviary(BaseRLAviary):
 
     #########################################################################
     # Reward functions
->>>>>>> MBA:gym-pybullet-drones/gym_pybullet_drones/envs/DRLAviary.py
 
     '''
 
@@ -709,12 +650,9 @@ class DRLAviary(BaseRLAviary):
 
         distance_reward = 0
         distance_reward = min(1000.0, 10.0 / (1e-6 + current_distance))
-<<<<<<< HEAD:gym-pybullet-drones/gym_pybullet_drones/envs/UnifiedAviary.py
-=======
         # //distance_reward = -current_distance**0.5
 
 
->>>>>>> MBA:gym-pybullet-drones/gym_pybullet_drones/envs/DRLAviary.py
         # if current_distance >= 4.0:
         #     distance_reward = 100/(current_distance)  # 基于距离的奖励，距离越近奖励越高
         # else:
@@ -808,11 +746,7 @@ class DRLAviary(BaseRLAviary):
         #     speed_reward = 100.0/(1e-6 + velocity_norm)  # 接近目标时速度越低奖励越高
         
         ################################################################################################
-<<<<<<< HEAD:gym-pybullet-drones/gym_pybullet_drones/envs/UnifiedAviary.py
-        MAX_HOVER_REWARD = 100.0  # Max reward for a perfect hover at the target center.
-=======
         MAX_SPEED_REWARD = 100.0  # Max reward for a perfect hover at the target center.
->>>>>>> MBA:gym-pybullet-drones/gym_pybullet_drones/envs/DRLAviary.py
         
         # We set the distance decay so the reward is half its max at the HOVER_THRESHOLD boundary.
         DISTANCE_DECAY = np.log(2) / (self.HOVER_THRESHOLD**2)
@@ -875,10 +809,6 @@ class DRLAviary(BaseRLAviary):
                         obstacle_reward -= 100.0
         
         return obstacle_reward
-<<<<<<< HEAD:gym-pybullet-drones/gym_pybullet_drones/envs/UnifiedAviary.py
-    
-=======
->>>>>>> MBA:gym-pybullet-drones/gym_pybullet_drones/envs/DRLAviary.py
     def _computeReward(self):
         state = self._getDroneStateVector(0)
         current_pos = state[0:3]
@@ -916,31 +846,6 @@ class DRLAviary(BaseRLAviary):
             #       f"Speed: {np.linalg.norm(current_vel):.2f}, "
             #       f"Hover time: {self.time_at_target:.1f}s{obstacle_info}")
             
-<<<<<<< HEAD:gym-pybullet-drones/gym_pybullet_drones/envs/UnifiedAviary.py
-        #     print(f"\n--------------------Rewards--------------------")
-        #     print(f"Navigation ({navigation_reward:.2f}):")
-        #     print(f"  - Distance: {nav_details['distance_reward']:.2f}")
-        #     print(f"  - Approaching: {nav_details['approaching_reward']:.2f}")
-        #     print(f"  - Position Precision: {nav_details['position_precision_reward']:.2f}")
-        #     print(f"    * X penalty: {nav_details['x_penalty']:.3f}")
-        #     print(f"    * Y penalty: {nav_details['y_penalty']:.3f}")
-        #     print(f"    * Z penalty: {nav_details['z_penalty']:.3f}")
-            
-        #     print(f"Stability ({stability_reward:.2f}):")
-        #     print(f"  - Attitude: {stab_details['attitude_penalty']:.2f} (RPY: {stab_details['rpy']})")
-        #     print(f"  - Angular Vel: {stab_details['angular_velocity_reward']:.2f} (|ω|: {stab_details['angular_vel_norm']:.3f})")
-        #     print(f"  - RPM Smoothness: {stab_details['rpm_smoothness_penalty']:.2f}")
-
-        #     print(f"Hovering ({hovering_reward:.2f}):")
-        #     print(f"  - Speed: {hover_details['speed_reward']:.2f} (|v|: {hover_details['velocity_norm']:.3f})")
-        #     print(f"  - Hover Time: {hover_details['hover_time_reward']:.2f} (in zone: {hover_details['in_hover_zone']})")
-            
-        #     print(f"Obstacles ({obstacle_reward:.2f}):")
-
-            
-        #     print(f"Completion: {completion_reward:.2f}")
-        #     print(f"TOTAL REWARD: {total_reward:.2f}")
-=======
             # print(f"\n--------------------Rewards--------------------")
             # print(f"Navigation ({navigation_reward:.2f}):")
             # print(f"  - Distance: {nav_details['distance_reward']:.2f}")
@@ -964,7 +869,6 @@ class DRLAviary(BaseRLAviary):
             
             # print(f"Completion: {completion_reward:.2f}")
             # print(f"TOTAL REWARD: {total_reward:.2f}")
->>>>>>> MBA:gym-pybullet-drones/gym_pybullet_drones/envs/DRLAviary.py
         
         return total_reward
 

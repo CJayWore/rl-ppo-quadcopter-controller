@@ -32,7 +32,7 @@ class ModelManager:
         """Create a new PPO model with appropriate configuration."""
         policy_kwargs = EnvironmentFactory.get_network_config(task)
         
-        # # M1 Apple Silicon compatibility
+        # ========================= M1 Apple Silicon Configuration =========================
         return PPO(
             'MlpPolicy',
             env,
@@ -50,24 +50,25 @@ class ModelManager:
             vf_coef=0.5,
             max_grad_norm=0.5
         )
-    
-        # RTX 3090 compatibility
+        
+        # ========================= RTX 3090 Configuration =========================
         # return PPO(
         #     'MlpPolicy',
         #     env,
         #     learning_rate=learning_rate,
-        #     n_steps=4096,
-        #     batch_size=512,
-        #     n_epochs=20,
+        #     n_steps=4096,               
+        #     batch_size=1024,             
+        #     n_epochs=15,                
         #     gamma=0.99,
         #     gae_lambda=0.95,
         #     clip_range=0.2,
         #     policy_kwargs=policy_kwargs,
         #     verbose=1,
-        #     device='cuda' if torch.cuda.is_available() else 'cpu',
-        #     ent_coef=0.01,
+        #     device='cuda',
+        #     ent_coef=0.008,
         #     vf_coef=0.5,
-        #     max_grad_norm=0.5
+        #     max_grad_norm=0.5,
+        #     tensorboard_log="./tensorboard_logs/"
         # )
 
     
