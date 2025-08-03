@@ -8,7 +8,7 @@ from gym_pybullet_drones.utils.enums import DroneModel, Physics, ActionType, Obs
 
 class DRLAviary(BaseRLAviary):
     """
-    Unified RL environment: Navigate to target while avoiding obstacles and hover at destination.
+    Deep RL environment: Navigate to target while avoiding obstacles and hover at destination.
     
     This environment combines three capabilities:
     1. Path planning: Navigate towards a target position
@@ -70,11 +70,19 @@ class DRLAviary(BaseRLAviary):
         self.connection_line_id = None
         self.path_markers = []
 
-        # Camera settings
+                # Camera settings
         self.camera_follow_enabled = True
-        self.camera_mode = "chase"  # "follow", "chase", "orbit"
+        self.camera_mode = "chase" # "follow", "chase", "orbit", "target_center", "target_orbit"
         self.camera_distance = 4.0
         self.camera_height_offset = 1.5
+        
+        # 🔧 添加相机平滑参数
+        self.camera_smoothing = 0.05  # 平滑系数，越小越平滑
+        self.camera_update_freq = 8
+        self.last_camera_pos = None
+        self.last_camera_target = None
+        self.last_camera_yaw = 0
+        self.last_camera_pitch = -25
 
         super().__init__(drone_model=drone_model,
                          num_drones=1,
@@ -289,7 +297,7 @@ class DRLAviary(BaseRLAviary):
             target_visual = p.createVisualShape(
                 shapeType=p.GEOM_SPHERE,
                 radius=0.1,
-                rgbaColor=[0, 1, 0, 0.8],  # 绿色半透明
+                rgbaColor=[0, 1, 0, 0.3],  # 绿色半透明
                 physicsClientId=self.CLIENT
             )
             
@@ -319,9 +327,34 @@ class DRLAviary(BaseRLAviary):
 
             self.target_body_ids = [self.target_visual_id, self.target_area_id]
 
+    # ======================== 相机平滑处理辅助函数 ========================
+    
+    def _smooth_interpolate(self, current, target):
+        """位置向量平滑插值"""
+        return current + (target - current) * self.camera_smoothing
+    
+    def _smooth_interpolate_scalar(self, current, target):
+        """标量平滑插值"""
+        return current + (target - current) * self.camera_smoothing
+    
+    def _smooth_angle_interpolate(self, current_angle, target_angle):
+        """角度平滑插值（处理角度循环问题）"""
+        # 处理角度差值的循环性质
+        diff = target_angle - current_angle
+        if diff > 180:
+            diff -= 360
+        elif diff < -180:
+            diff += 360
+        
+        return current_angle + diff * self.camera_smoothing
+
     def _updateCamera(self):
-        """智能相机跟随系统"""
+        """智能相机跟随系统 - 带平滑处理"""
         if not self.GUI or not self.camera_follow_enabled:
+            return
+        
+        # 🔧 降低更新频率，减少抖动
+        if self.step_counter % self.camera_update_freq != 0:
             return
             
         # 获取无人机状态
@@ -330,18 +363,22 @@ class DRLAviary(BaseRLAviary):
         drone_vel = state[10:13]
         
         if self.camera_mode == "follow":
-            # 模式1：第三人称跟随
             self._followCamera(drone_pos, drone_vel)
         elif self.camera_mode == "chase":
-            # 模式2：追逐视角（从后方跟随）
             self._chaseCamera(drone_pos, drone_vel)
         elif self.camera_mode == "orbit":
-            # 模式3：环绕视角
             self._orbitCamera(drone_pos)
+        elif self.camera_mode == "target_center":
+            self._targetCenterCamera(drone_pos)
+        elif self.camera_mode == "target_orbit":
+            self._targetOrbitCamera(drone_pos)
     
     def _followCamera(self, drone_pos, drone_vel):
-        """第三人称跟随相机"""
-        # 相机位置：无人机后方偏上
+        """第三人称跟随相机 - 平滑版本"""
+        # 预测无人机位置
+        predicted_pos = drone_pos + drone_vel * 0.1
+        
+        # 计算基础相机位置
         velocity_direction = drone_vel / (np.linalg.norm(drone_vel) + 1e-6)
         
         # 如果无人机静止，使用朝向目标的方向
@@ -352,17 +389,32 @@ class DRLAviary(BaseRLAviary):
             else:
                 velocity_direction = np.array([1, 0, 0])  # 默认方向
         
+        # 🔧 动态相机距离调整 - 根据速度和高度调整
+        speed = np.linalg.norm(drone_vel)
+        height = drone_pos[2]
+        
+        # 基础距离 + 速度调整 + 高度调整
+        dynamic_distance = self.camera_distance + speed * 0.5 + max(0, (height - 1.0) * 0.3)
+        dynamic_distance = max(0.5, min(8.0, dynamic_distance))  # 限制范围
+        
         # 相机位置在无人机后方
-        camera_offset = -velocity_direction * self.camera_distance
-        camera_offset[2] += self.camera_height_offset  # 添加高度偏移
+        camera_offset = -velocity_direction * dynamic_distance
+        camera_offset[2] += self.camera_height_offset
         
-        camera_pos = drone_pos + camera_offset
+        target_camera_pos = predicted_pos + camera_offset
+        target_camera_target = drone_pos + velocity_direction * 2.0
         
-        # 相机目标：无人机前方一点
-        camera_target = drone_pos + velocity_direction * 2.0
+        # 初始化历史位置
+        if self.last_camera_pos is None:
+            self.last_camera_pos = target_camera_pos
+            self.last_camera_target = target_camera_target
+        
+        # 平滑插值
+        smooth_camera_pos = self._smooth_interpolate(self.last_camera_pos, target_camera_pos)
+        smooth_camera_target = self._smooth_interpolate(self.last_camera_target, target_camera_target)
         
         # 计算相机角度
-        direction_to_target = camera_target - camera_pos
+        direction_to_target = smooth_camera_target - smooth_camera_pos
         distance = np.linalg.norm(direction_to_target[:2])
         
         if distance > 1e-6:
@@ -371,73 +423,214 @@ class DRLAviary(BaseRLAviary):
         else:
             yaw, pitch = 0, -30
         
+        # 角度平滑处理
+        smooth_yaw = self._smooth_angle_interpolate(self.last_camera_yaw, yaw)
+        smooth_pitch = self._smooth_interpolate_scalar(self.last_camera_pitch, pitch)
+        
+        # 应用相机设置
         p.resetDebugVisualizerCamera(
-            cameraDistance=self.camera_distance,
-            cameraYaw=yaw,
-            cameraPitch=pitch,
+            cameraDistance=dynamic_distance,
+            cameraYaw=smooth_yaw,
+            cameraPitch=smooth_pitch,
             cameraTargetPosition=drone_pos,
             physicsClientId=self.CLIENT
         )
+        
+        # 更新历史值
+        self.last_camera_pos = smooth_camera_pos
+        self.last_camera_target = smooth_camera_target
+        self.last_camera_yaw = smooth_yaw
+        self.last_camera_pitch = smooth_pitch
 
     def _chaseCamera(self, drone_pos, drone_vel):
-        """追逐相机（总是从后方跟随）"""
-        # 相机距离和角度
-        distance = self.camera_distance
-        height_offset = 1.0
-        
-        # 如果有速度，从后方跟随
+        """追逐相机（总是从后方跟随）- 平滑版本"""
+        # 计算目标角度
         if np.linalg.norm(drone_vel) > 0.1:
             vel_normalized = drone_vel / np.linalg.norm(drone_vel)
-            yaw = np.degrees(np.arctan2(vel_normalized[1], vel_normalized[0]))
+            target_yaw = np.degrees(np.arctan2(vel_normalized[1], vel_normalized[0]))
         else:
             # 静止时，面向目标
             if hasattr(self, 'TARGET_POS'):
                 direction = self.TARGET_POS - drone_pos
-                yaw = np.degrees(np.arctan2(direction[1], direction[0]))
+                target_yaw = np.degrees(np.arctan2(direction[1], direction[0]))
             else:
-                yaw = 0
+                target_yaw = self.last_camera_yaw  # 保持当前角度
         
-        pitch = -25  # 稍微向下俯视
+        # 🔧 动态相机距离调整 - 根据速度和环境调整
+        speed = np.linalg.norm(drone_vel)
+        height = drone_pos[2]
         
-        camera_target = drone_pos + np.array([0, 0, height_offset])
+        # 基础距离 + 速度调整 + 高度调整
+        dynamic_distance = self.camera_distance + speed * 0.4 + max(0, (height - 1.0) * 0.2)
+        dynamic_distance = max(0.5, min(7.0, dynamic_distance))  # 限制范围
         
+        target_pitch = -25  # 稍微向下俯视
+        height_offset = 0.5
+        
+        target_camera_target = drone_pos + np.array([0, 0, height_offset])
+        
+        # 角度平滑处理
+        smooth_yaw = self._smooth_angle_interpolate(self.last_camera_yaw, target_yaw)
+        smooth_pitch = self._smooth_interpolate_scalar(self.last_camera_pitch, target_pitch)
+        
+        # 目标位置平滑处理
+        if self.last_camera_target is None:
+            self.last_camera_target = target_camera_target
+        
+        smooth_camera_target = self._smooth_interpolate(self.last_camera_target, target_camera_target)
+        
+        # 应用相机设置
         p.resetDebugVisualizerCamera(
-            cameraDistance=distance,
-            cameraYaw=yaw,
-            cameraPitch=pitch,
-            cameraTargetPosition=camera_target,
+            cameraDistance=dynamic_distance,
+            cameraYaw=smooth_yaw,
+            cameraPitch=smooth_pitch,
+            cameraTargetPosition=smooth_camera_target,
             physicsClientId=self.CLIENT
         )
+        
+        # 更新历史值
+        self.last_camera_target = smooth_camera_target
+        self.last_camera_yaw = smooth_yaw
+        self.last_camera_pitch = smooth_pitch
 
     def _orbitCamera(self, drone_pos):
-        """环绕相机（围绕无人机旋转）"""
+        """环绕相机（围绕无人机旋转）- 平滑版本"""
         # 基于时间的环绕角度
-        orbit_speed = 0.5  # 环绕速度
-        orbit_angle = (self.step_counter * orbit_speed) % 360
+        orbit_speed = 0.2  # 环绕速度
+        target_orbit_angle = (self.step_counter * orbit_speed) % 360
         
-        distance = self.camera_distance * 1.5
-        pitch = -20
+        # 🔧 动态相机距离调整 - 根据无人机高度和环境调整
+        height = drone_pos[2]
         
-        camera_target = drone_pos + np.array([0, 0, 0.5])
+        # 计算到目标的距离，影响相机距离
+        drone_to_target_distance = np.linalg.norm(drone_pos - self.TARGET_POS) if hasattr(self, 'TARGET_POS') else 0
         
+        # 基础距离 + 高度调整 + 目标距离影响
+        dynamic_distance = self.camera_distance * 1.5 + max(0, (height - 1.0) * 0.4) + drone_to_target_distance * 0.1
+        dynamic_distance = max(0.5, min(10.0, dynamic_distance))  # 限制范围
+        
+        target_pitch = -20
+        
+        target_camera_target = drone_pos + np.array([0, 0, 0.5])
+        
+        # 角度平滑处理（环绕）
+        smooth_yaw = self._smooth_angle_interpolate(self.last_camera_yaw, target_orbit_angle)
+        smooth_pitch = self._smooth_interpolate_scalar(self.last_camera_pitch, target_pitch)
+        
+        # 目标位置平滑处理
+        if self.last_camera_target is None:
+            self.last_camera_target = target_camera_target
+        
+        smooth_camera_target = self._smooth_interpolate(self.last_camera_target, target_camera_target)
+        
+        # 应用相机设置
         p.resetDebugVisualizerCamera(
-            cameraDistance=distance,
-            cameraYaw=orbit_angle,
-            cameraPitch=pitch,
-            cameraTargetPosition=camera_target,
+            cameraDistance=dynamic_distance,
+            cameraYaw=smooth_yaw,
+            cameraPitch=smooth_pitch,
+            cameraTargetPosition=smooth_camera_target,
             physicsClientId=self.CLIENT
         )
+        
+        # 更新历史值
+        self.last_camera_target = smooth_camera_target
+        self.last_camera_yaw = smooth_yaw
+        self.last_camera_pitch = smooth_pitch
+
+    def _targetCenterCamera(self, drone_pos):
+        """以目标点为中心，始终朝向无人机 - 平滑版本"""
+        # 计算从目标点到无人机的方向
+        direction_to_drone = drone_pos - self.TARGET_POS
+        distance_to_drone = np.linalg.norm(direction_to_drone)
+        
+        if distance_to_drone < 1e-6:
+            # 如果无人机就在目标点，使用默认视角
+            target_yaw = 0
+            target_pitch = -30
+        else:
+            # 计算朝向无人机的角度
+            target_yaw = np.degrees(np.arctan2(direction_to_drone[1], direction_to_drone[0]))
+            # 计算俯仰角（向上看无人机）
+            horizontal_distance = np.linalg.norm(direction_to_drone[:2])
+            target_pitch = np.degrees(np.arctan2(direction_to_drone[2], horizontal_distance))
+        
+        # 相机距离设置（从目标点出发）
+        camera_distance = max(0.5, distance_to_drone * 0.7)  # 动态调整距离
+        target_camera_target = self.TARGET_POS  # 相机始终看向目标点
+        
+        # 角度平滑处理
+        smooth_yaw = self._smooth_angle_interpolate(self.last_camera_yaw, target_yaw)
+        smooth_pitch = self._smooth_interpolate_scalar(self.last_camera_pitch, target_pitch)
+        
+        # 目标位置平滑处理
+        if self.last_camera_target is None:
+            self.last_camera_target = target_camera_target
+        
+        smooth_camera_target = self._smooth_interpolate(self.last_camera_target, target_camera_target)
+        
+        # 应用相机设置
+        p.resetDebugVisualizerCamera(
+            cameraDistance=camera_distance,
+            cameraYaw=smooth_yaw,
+            cameraPitch=smooth_pitch,
+            cameraTargetPosition=smooth_camera_target,
+            physicsClientId=self.CLIENT
+        )
+        
+        # 更新历史值
+        self.last_camera_target = smooth_camera_target
+        self.last_camera_yaw = smooth_yaw
+        self.last_camera_pitch = smooth_pitch
+
+    def _targetOrbitCamera(self, drone_pos):
+        """环绕目标点旋转相机 - 平滑版本"""
+        # 基于时间的环绕角度
+        orbit_speed = 0.3  # 环绕速度
+        target_orbit_angle = (self.step_counter * orbit_speed) % 360
+        
+        # 计算相机距离（基于无人机到目标点的距离动态调整）
+        drone_to_target_distance = np.linalg.norm(drone_pos - self.TARGET_POS)
+        camera_distance = max(0.5, drone_to_target_distance * 1.2 + 2.0)  # 确保能看到无人机和目标
+        
+        # 俯仰角略微向下，以便看到目标点
+        target_pitch = -15
+        
+        target_camera_target = self.TARGET_POS  # 相机始终看向目标点
+        
+        # 角度平滑处理（环绕）
+        smooth_yaw = self._smooth_angle_interpolate(self.last_camera_yaw, target_orbit_angle)
+        smooth_pitch = self._smooth_interpolate_scalar(self.last_camera_pitch, target_pitch)
+        
+        # 目标位置平滑处理
+        if self.last_camera_target is None:
+            self.last_camera_target = target_camera_target
+        
+        smooth_camera_target = self._smooth_interpolate(self.last_camera_target, target_camera_target)
+        
+        # 应用相机设置
+        p.resetDebugVisualizerCamera(
+            cameraDistance=camera_distance,
+            cameraYaw=smooth_yaw,
+            cameraPitch=smooth_pitch,
+            cameraTargetPosition=smooth_camera_target,
+            physicsClientId=self.CLIENT
+        )
+        
+        # 更新历史值
+        self.last_camera_target = smooth_camera_target
+        self.last_camera_yaw = smooth_yaw
+        self.last_camera_pitch = smooth_pitch
 
     def toggle_camera_mode(self):
         """切换相机模式（可以通过键盘调用）"""
-        modes = ["follow", "chase", "orbit"]
+        modes = ["follow", "chase", "orbit", "target_center", "target_orbit"]
         current_index = modes.index(self.camera_mode)
         self.camera_mode = modes[(current_index + 1) % len(modes)]
         print(f"📹 相机模式切换到: {self.camera_mode}")
 
     def set_camera_distance(self, distance):
         """设置相机距离"""
-        self.camera_distance = max(1.0, min(10.0, distance))
+        self.camera_distance = max(0.5, min(10.0, distance))
         print(f"📹 相机距离设置为: {self.camera_distance:.1f}m")
 
     #########################################################################
@@ -860,10 +1053,22 @@ class DRLAviary(BaseRLAviary):
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
         
+        if self.GUI:
+            keys = p.getKeyboardEvents(physicsClientId=self.CLIENT)
+            # 'C': Toggle camera mode
+            if ord('c') in keys and keys[ord('c')] & p.KEY_WAS_TRIGGERED:
+                self.toggle_camera_mode()
+            # '=': Increase camera distance'
+            elif ord('=') in keys and keys[ord('=')] & p.KEY_WAS_TRIGGERED:
+                self.set_camera_distance(self.camera_distance + 0.1)
+            # '-': Decrease camera distance'
+            elif ord('-') in keys and keys[ord('-')] & p.KEY_WAS_TRIGGERED:
+                self.set_camera_distance(self.camera_distance - 0.1)
+        
         # Update visualisation
         if self.GUI and self.step_counter % 5 == 0:
             self._drawConnectionLine()
-        if self.GUI and self.step_counter % 3 == 0:
+        if self.GUI and self.step_counter % 1 == 0:
             self._updateCamera()
         
         return obs, reward, terminated, truncated, info

@@ -6,17 +6,29 @@ This script uses a modular framework approach for training and evaluating
 PPO agents for various drone control tasks.
 
 Usage Examples:
+------------------------------------------------------------------------------------------------------------
+    # Disable obstacles
     # Training
-    python rl_modular.py --task unified --train_mode True --episodes 1000
+    python drl.py --task unified --train_mode True --episodes 1000 --enable_obstacles False
     
     # Evaluation  
-    python rl_modular.py --task unified --train_mode False --gui True
+    python drl.py --task unified --train_mode False --gui True --enable_obstacles False
     
     # Continue training
-    python rl_modular.py --task unified --train_mode True --load_model results/unified/best_model.zip
+    python drl.py --task unified --train_mode True --load_model results/unified/best_model.zip --enable_obstacles False --episodes 10000
+------------------------------------------------------------------------------------------------------------
+    # Enable obstacles
+    # Training
+    python drl.py --task unified --train_mode True --episodes 1000
+    
+    # Evaluation  
+    python drl.py --task unified --train_mode False --gui True
+    
+    # Continue training
+    python drl.py --task unified --train_mode True --load_model results/unified/best_model.zip --episodes 10000
     
     # List available models
-    python rl_modular.py --list_models
+    python drl.py --list_models
 """
 
 import os
@@ -98,10 +110,10 @@ def main():
                 print(f"\n🎉 Training completed successfully!")
                 print(f"📊 Results saved to: {result_folder}")
                 print(f"\n💡 Next steps:")
-                print(f"   • List models: python rl_modular.py --list_models")
-                print(f"   • Evaluate: python rl_modular.py --task {args.task} --train_mode False --gui True")
+                print(f"   • List models: python d r l.py --list_models")
+                print(f"   • Evaluate: python drl.py --task {args.task} --train_mode False --gui True")
                 if args.enable_obstacles and args.task == "unified":
-                    print(f"   • Test without obstacles: python rl_modular.py --task {args.task} --train_mode False --enable_obstacles False --gui True")
+                    print(f"   • Test without obstacles: python drl.py --task {args.task} --train_mode False --enable_obstacles False --gui True")
         else:
             # Evaluation mode
             trainer.run_evaluation(args.load_model)

@@ -21,8 +21,8 @@ class EnvironmentFactory:
     }
     
     NETWORK_CONFIGS = {
-        "complex": dict(net_arch=[dict(pi=[512, 512, 256], vf=[512, 512, 256])]),
-        "simple": dict(net_arch=[dict(pi=[128, 128], vf=[128, 128])])
+        "complex": dict(net_arch=[dict(pi=[512, 512, 256], vf=[512, 512, 256])]) # for m1 Apple Silicon
+        # "complex": dict(net_arch=[dict(pi=[128, 128], vf=[128, 128])])  # for GPU
     }
     
     @classmethod

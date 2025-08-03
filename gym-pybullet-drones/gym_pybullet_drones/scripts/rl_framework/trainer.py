@@ -18,7 +18,7 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.vec_env import VecNormalize
-from stable_baselines3.common.env_util import make_vec_env
+
 
 
 from gym_pybullet_drones.utils.Logger import Logger
@@ -458,6 +458,7 @@ class DroneRLTrainer:
             ),
             n_envs=1
         )
+
         test_env_nogui = VecNormalize.load(stats_path, test_env_nogui_raw)
         test_env_nogui.training = False
         test_env_nogui.norm_reward = False
@@ -507,48 +508,54 @@ class DroneRLTrainer:
         episode_count = 0
         
         print(f"Running visualization for {self.env_config.duration_sec} seconds...")
-        obs, info = test_env.reset(seed=int(time.time()), options={})
+        obs = test_env.reset()
         episode_count += 1
         
         print(f"Starting evaluation episode {episode_count}...")
-        if hasattr(test_env, 'TARGET_POS'):
-            print(f"        Target position: [[{test_env.TARGET_POS[0]:.3f}, {test_env.TARGET_POS[1]:.3f}, {test_env.TARGET_POS[2]:.3f}]")
+        if hasattr(test_env.envs[0], 'TARGET_POS'):
+            target_pos = test_env.envs[0].TARGET_POS
+            print(f"        Target position: [{target_pos[0]:.3f}, {target_pos[1]:.3f}, {target_pos[2]:.3f}]")
         
-        if hasattr(test_env, '_getDroneStateVector'):
-            initial_state = test_env._getDroneStateVector(0)
+        if hasattr(test_env.envs[0], '_getDroneStateVector'):
+            initial_state = test_env.envs[0]._getDroneStateVector(0)
             initial_pos = initial_state[0:3]
             print(f"        Initial position: [{initial_pos[0]:.3f}, {initial_pos[1]:.3f}, {initial_pos[2]:.3f}]")
         
         start = time.time()
         
-        for i in range(int(self.env_config.duration_sec * test_env.CTRL_FREQ)):
+        ctrl_freq = test_env.envs[0].CTRL_FREQ
+        for i in range(int(self.env_config.duration_sec * ctrl_freq)):
             # Get action from model
             action, _states = model.predict(obs, deterministic=True)
             
             # Step environment
-            obs, reward, terminated, truncated, info = test_env.step(action)
-            total_reward += reward
+            obs, reward, done, info = test_env.step(action)
+            
+            reward_scalar = reward[0] if hasattr(reward, '__len__') and len(reward) > 0 else reward
+            done_scalar = done[0] if hasattr(done, '__len__') and len(done) > 0 else done
+            
+            total_reward += reward_scalar
             step_count += 1
             
             # Log data
             self._log_step_data(logger, obs, action, i, test_env)
             
             # Print progress
-            if i % (test_env.CTRL_FREQ * 2) == 0:
+            if i % (ctrl_freq * 2) == 0:
                 self._print_evaluation_progress(i, test_env, reward, total_reward, step_count, info)
             
             # Render
             test_env.render()
-            sync(i, start, test_env.CTRL_TIMESTEP)
+            sync(i, start, test_env.envs[0].CTRL_TIMESTEP)
             
             # Handle episode termination
-            if terminated or truncated:
+            if done_scalar:
                 episode_count += 1
                 print(f"Episode {episode_count} ended!")
-                print(f"   Terminated: {terminated}, Truncated: {truncated}")
+                print(f"   Done: {done_scalar}")
                 
-                self._handle_episode_termination(test_env, terminated)
-                obs, info = test_env.reset(seed=int(time.time()), options={})
+                self._handle_episode_termination(test_env, done_scalar)
+                obs = test_env.reset()
         
         # Print final statistics
         print(f"\nFinal Results:")
@@ -574,37 +581,40 @@ class DroneRLTrainer:
             
             logger.log(
                 drone=0,
-                timestamp=step / test_env.CTRL_FREQ,
+                timestamp=step / test_env.envs[0].CTRL_FREQ,
                 state=state,
                 control=np.zeros(12)
             )
     
-    def _print_evaluation_progress(self, step: int, test_env, reward: float, total_reward: float, step_count: int, info):
+    def _print_evaluation_progress(self, step: int, test_env, reward, total_reward, step_count: int, info):
         """Print evaluation progress information."""
         avg_reward = total_reward / max(step_count, 1)
-        print(f"    Time: {step/test_env.CTRL_FREQ:.1f}s, "
-              f"Reward: {reward:.3f}, "
-              f"Avg Reward: {avg_reward:.3f}")
+        ctrl_freq = test_env.envs[0].CTRL_FREQ
+        
+        reward_scalar = reward[0] if hasattr(reward, '__len__') and len(reward) > 0 else reward
+        avg_reward_scalar = avg_reward[0] if hasattr(avg_reward, '__len__') and len(avg_reward) > 0 else avg_reward
+        
+        print(f"    Time: {step/ctrl_freq:.1f}s, "
+            f"Reward: {reward_scalar:.3f}, "
+            f"Avg Reward: {avg_reward_scalar:.3f}")
         
         # Task-specific info
-        if hasattr(info, 'get'):
+        info_dict = info[0] if isinstance(info, (list, np.ndarray)) and len(info) > 0 else info
+        
+        if hasattr(info_dict, 'get') or isinstance(info_dict, dict):
             if self.training_config.task == "unified":
-                distance = info.get('distance_to_target', 0)
-                hover_time = info.get('time_at_target', 0)
+                distance = info_dict.get('distance_to_target', 0)
+                hover_time = info_dict.get('time_at_target', 0)
                 print(f"      Distance to target: {distance:.3f}m, Hover time: {hover_time:.1f}s")
-            elif self.training_config.task == "trajectory":
-                progress = info.get('trajectory_progress', 0)
-                print(f"      Progress: {progress:.1%}")
-            elif self.training_config.task == "obstacle":
-                distance = info.get('distance_to_goal', 0)
-                print(f"      Distance to goal: {distance:.2f}m")
+
     
-    def _handle_episode_termination(self, test_env, terminated: bool):
+    def _handle_episode_termination(self, test_env, done: bool):
         """Handle episode termination and print results."""
         if self.training_config.task == "unified":
-            hover_time = getattr(test_env, 'time_at_target', 0)
-            required_time = getattr(test_env, 'required_hover_time', 3.0)
-            if terminated:
+            # 修复7: 使用 test_env.envs[0] 访问底层环境属性
+            hover_time = getattr(test_env.envs[0], 'time_at_target', 0)
+            required_time = getattr(test_env.envs[0], 'required_hover_time', 3.0)
+            if done:
                 print(f"   ✅ Task completed! Hovered for {hover_time:.1f}s (required: {required_time:.1f}s)")
             else:
                 print(f"   ❌ Task not completed. Hover time: {hover_time:.1f}s (required: {required_time:.1f}s)")

@@ -44,8 +44,8 @@ def create_argument_parser() -> argparse.ArgumentParser:
                        help='Whether to use PyBullet GUI (default: True)')
     parser.add_argument('--record_video', default=False, type=str2bool,
                        help='Whether to record video (default: False)')
-    parser.add_argument('--duration_sec', default=30, type=int,
-                       help='Duration for evaluation in seconds (default: 30)')
+    parser.add_argument('--duration_sec', default=60, type=int,
+                       help='Duration for evaluation in seconds (default: 60)')
     
     # Model parameters
     parser.add_argument('--load_model', default=None, type=str,
