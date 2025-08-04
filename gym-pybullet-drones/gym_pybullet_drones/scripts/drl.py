@@ -5,6 +5,8 @@ Modular Deep Reinforcement Learning Script for Multi-Task Drone Control
 This script uses a modular framework approach for training and evaluating 
 PPO agents for various drone control tasks.
 
+cd gym-pybullet-drones/gym_pybullet_drones/scripts
+
 Usage Examples:
 ------------------------------------------------------------------------------------------------------------
     # Disable obstacles

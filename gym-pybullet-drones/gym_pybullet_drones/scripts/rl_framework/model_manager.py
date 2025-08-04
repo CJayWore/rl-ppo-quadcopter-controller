@@ -33,43 +33,42 @@ class ModelManager:
         policy_kwargs = EnvironmentFactory.get_network_config(task)
         
         # ========================= M1 Apple Silicon Configuration =========================
+        # return PPO(
+        #     'MlpPolicy',
+        #     env,
+        #     learning_rate=learning_rate,
+        #     n_steps=2048,
+        #     batch_size=128,
+        #     n_epochs=10,
+        #     gamma=0.99,
+        #     gae_lambda=0.95,
+        #     clip_range=0.2,
+        #     policy_kwargs=policy_kwargs,
+        #     verbose=1,
+        #     device='auto',
+        #     ent_coef=0.01,
+        #     vf_coef=0.5,
+        #     max_grad_norm=0.5
+        # )
+        
+        # ========================= RTX 3090 Configuration =========================
         return PPO(
             'MlpPolicy',
             env,
             learning_rate=learning_rate,
-            n_steps=2048,
-            batch_size=128,
-            n_epochs=10,
+            n_steps=4096,               
+            batch_size=1024,             
+            n_epochs=15,                
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
             policy_kwargs=policy_kwargs,
             verbose=1,
             device='auto',
-            ent_coef=0.01,
+            ent_coef=0.008,
             vf_coef=0.5,
-            max_grad_norm=0.5
+            max_grad_norm=0.5,
         )
-        
-        # ========================= RTX 3090 Configuration =========================
-        # return PPO(
-        #     'MlpPolicy',
-        #     env,
-        #     learning_rate=learning_rate,
-        #     n_steps=4096,               
-        #     batch_size=1024,             
-        #     n_epochs=15,                
-        #     gamma=0.99,
-        #     gae_lambda=0.95,
-        #     clip_range=0.2,
-        #     policy_kwargs=policy_kwargs,
-        #     verbose=1,
-        #     device='cuda',
-        #     ent_coef=0.008,
-        #     vf_coef=0.5,
-        #     max_grad_norm=0.5,
-        #     tensorboard_log="./tensorboard_logs/"
-        # )
 
     
     def load_model_with_compatibility_check(

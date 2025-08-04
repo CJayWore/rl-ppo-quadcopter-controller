@@ -17,12 +17,12 @@ class EnvironmentFactory:
     """Factory for creating different types of environments."""
     
     TARGET_REWARDS = {
-        "unified": {"default": 500000.0}
+        "unified": {"default": 1000000.0}
     }
     
     NETWORK_CONFIGS = {
-        "complex": dict(net_arch=[dict(pi=[512, 512, 256], vf=[512, 512, 256])]) # for m1 Apple Silicon
-        # "complex": dict(net_arch=[dict(pi=[128, 128], vf=[128, 128])])  # for GPU
+        # "complex": dict(net_arch=[dict(pi=[512, 512, 256], vf=[512, 512, 256])]) # for m1 Apple Silicon
+        "complex": dict(net_arch=[dict(pi=[1024, 512, 256], vf=[1024, 512, 256])])  # for GPU
     }
     
     @classmethod
