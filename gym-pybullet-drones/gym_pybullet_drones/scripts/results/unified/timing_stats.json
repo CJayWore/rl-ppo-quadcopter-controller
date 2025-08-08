@@ -1,11 +1,11 @@
 {
-  "total_episodes": 5195,
-  "total_training_time": 71150.22171592712,
-  "avg_episode_time": 13.695904083912824,
-  "min_episode_time": 0.37926793098449707,
-  "max_episode_time": 34.72224712371826,
-  "std_episode_time": 9.722782167025933,
+  "total_episodes": 22446,
+  "total_training_time": 27288.49759864807,
+  "avg_episode_time": 1.2157398912344324,
+  "min_episode_time": -0.12342715263366699,
+  "max_episode_time": 9.221501111984253,
+  "std_episode_time": 1.6039715706596853,
   "success_rate": 0.0,
   "avg_completion_time": 0,
-  "recent_avg_time": 17.238574576377868
+  "recent_avg_time": 0.7270856857299804
 }

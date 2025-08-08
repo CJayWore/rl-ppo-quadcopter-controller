@@ -3,57 +3,123 @@
 ## 📁 文件结构
 
 ```
+gym_pybullet_drones/scripts/
+drl.py                   # 主要脚本
 rl_framework/                    # 模块化框架目录
 ├── __init__.py                 # 包初始化和导出
 ├── config.py                   # 配置类 (TrainingConfig, EnvironmentConfig, ModelConfig)
 ├── notifications.py            # 系统通知管理
 ├── environment.py              # 环境工厂和配置 (只支持UnifiedAviary)
-├── model_manager.py           # 模型加载、保存和管理
-├── trainer.py                 # 主要训练器类
-└── utils.py                   # 工具函数
+├── model_manager.py            # 模型加载、保存和管理
+├── trainer.py                  # 主要训练器类
+└── utils.py                    # 工具函数
 
-rl_modular.py                  # 新的主要脚本（使用模块化结构）
-rl_refactored.py              # 重构但单文件版本
-rl.py                         # 原始版本
+gym_pybullet_drones/envs/DRLAviary.py # 强化学习环境核心定义
 ```
 
-## 🎯 重要说明
+---
 
-**此版本只支持 `unified` 任务！**
-- ✅ 专注于 UnifiedAviary 环境
-- ✅ 支持障碍物开关 (`--enable_obstacles`)
-- ✅ 更简洁的代码结构
-- ❌ 不再支持 hover、trajectory、obstacle 单独任务
+## 🔍 主要模块与功能说明
 
-## 🔧 模块说明
+### 1. `drl.py`
+- 命令行入口脚本，负责参数解析、配置生成、训练/评估流程启动。
+- 支持训练、评估、模型管理、断点续训等多种模式。
 
-### 1. **config.py** - 配置管理
-- `TrainingConfig`: 训练参数（默认任务为unified）
-- `EnvironmentConfig`: 环境参数
-- `ModelConfig`: 模型参数
+### 2. `rl_framework/config.py`
+- `TrainingConfig`：训练参数（如任务类型、学习率、训练轮数等）
+- `EnvironmentConfig`：环境参数（如观测类型、动作类型、GUI等）
+- `ModelConfig`：模型参数（如模型保存路径、是否加载已有模型等）
 
-### 2. **environment.py** - 环境管理（简化版）
-- `EnvironmentFactory`: 只创建 UnifiedAviary 环境
-- 统一的网络架构配置（复杂网络）
-- 固定目标奖励：500000.0
+### 3. `rl_framework/environment.py`
+- `EnvironmentFactory`：根据配置创建强化学习环境（目前只支持UnifiedAviary/DRLAviary）
+- 环境参数自动注入，支持障碍物、目标点等配置
 
-### 4. **model_manager.py** - 模型管理
-- `ModelManager`: PPO 模型管理
-- 模型加载、保存、兼容性检查
-- 学习率更新和权重迁移
+### 4. `rl_framework/model_manager.py`
+- `ModelManager`：负责模型的保存、加载、管理、权重迁移、模型列表等
+- 支持Stable-Baselines3 PPO模型的兼容性检查
 
-### 5. **trainer.py** - 训练器
-- `DroneRLTrainer`: 主要训练和评估逻辑
-- 训练流程管理和结果可视化
-- 评估循环和性能统计
+### 5. `rl_framework/trainer.py`
+- `DroneRLTrainer`：训练主循环、评估主循环、日志与可视化、性能统计
+- 支持断点续训、定期评估、自动保存最佳模型
 
-### 6. **utils.py** - 工具函数
-- `create_argument_parser`: 命令行参数解析
-- 其他辅助工具函数
+### 6. `rl_framework/utils.py`
+- `create_argument_parser`：命令行参数解析
+- 其他辅助函数
 
-## 🚀 使用方法
+### 7. `gym_pybullet_drones/envs/DRLAviary.py`
+- 强化学习环境核心，定义了 observation space、action space、奖励函数、终止条件等
+- 支持障碍物、目标导航、悬停等多任务融合
 
-### 基本使用
+---
+
+## 🤖 DRL算法与环境说明
+
+### 算法框架
+- 使用 [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3) 的 PPO 算法
+- 支持多线程采样、断点续训、定期评估、自动保存最佳模型
+- 可自定义网络结构、学习率、奖励函数等
+
+### 训练流程
+1. 解析命令行参数，生成配置对象
+2. 创建环境（DRLAviary），自动注入障碍物、目标点等
+3. 初始化PPO智能体，加载或新建模型
+4. 进入训练主循环，周期性评估与保存
+5. 训练完成后可直接评估或继续训练
+
+---
+
+## 🧠 Observation Space (观测空间)
+
+环境观测空间为一维向量，包含以下所有信息，每一项都为智能体学习特定能力服务：
+
+| 维度区间      | 含义                        | 作用/目的说明 |
+|---------------|-----------------------------|----------------|
+| 0-2           | 位置 (Position, x/y/z)      | 无人机绝对位置，辅助全局定位与导航 |
+| 3-5           | 姿态 (Roll, Pitch, Yaw)     | 姿态感知，便于姿态稳定与控制 |
+| 6-8           | 线速度 (Velocity, x/y/z)    | 速度感知，便于速度控制与减速悬停 |
+| 9-11          | 角速度 (Angular Velocity)   | 姿态变化速率，便于角速度约束与抑制旋转 |
+| 12-71         | 电机历史转速 (4电机x15步)   | 运动平滑性、动力学记忆，辅助学习动力学约束与动作平滑 |
+| 72-83         | 激光雷达 (12方向)           | 障碍物感知，避障能力的关键输入 |
+| 84-86         | 世界坐标系相对目标位置      | 全局导航，辅助无人机朝向目标点移动 |
+| 87-89         | 机体坐标系相对目标位置      | 局部导航，便于学习机体朝向下的精细调整 |
+| 90-92         | 机体坐标系速度              | 局部速度控制，便于多方向精细调整与减速 |
+| 93            | 到目标的欧几里得距离         | 距离奖励、任务完成判据 |
+| 94            | 目标角度 (相对yaw)          | 朝向调整，便于学习转向目标点 |
+| 95-96         | 角度的sin/cos表示           | 角度平滑、消除角度不连续性，便于神经网络处理 |
+
+> **总维度** = 97（如有扩展请同步更新）
+
+#### 典型观测向量示例
+```
+[位置x, 位置y, 位置z, roll, pitch, yaw, vx, vy, vz, wx, wy, wz, 电机1历史..., 电机4历史..., 激光1, ..., 激光12, 世界目标x, 世界目标y, 世界目标z, 机体目标前后, 机体目标左右, 机体目标上下, 机体速度前后, 机体速度左右, 机体速度上下, 距离, 角度, sin(角度), cos(角度)]
+```
+
+---
+
+## 🎮 Action Space (动作空间)
+
+- **类型**：连续动作空间（Box）
+- **维度**：4
+- **含义**：四个电机的转速（RPM），范围通常为 [0, MAX_RPM]
+- **接口**：`env.action_space = spaces.Box(low=0, high=MAX_RPM, shape=(4,), dtype=np.float32)`
+- **智能体输出**：每步输出一个长度为4的向量，分别对应四个电机的控制信号
+
+---
+
+## 🏆 Reward Design (奖励设计)
+
+- **导航奖励**：鼓励无人机靠近目标点，奖励与距离成反比
+- **多方向速度奖励**：鼓励无人机在机体坐标系下朝正确方向移动（前后/左右/上下）
+- **yaw抑制奖励**：接近目标时抑制不必要的yaw旋转
+- **姿态/角速度奖励**：分别对roll/pitch/yaw角速度进行约束，悬停时yaw要求更严格
+- **悬停奖励**：在目标点附近且速度/角速度足够小时，奖励持续悬停
+- **避障奖励**：远离障碍物有正奖励，靠近/碰撞有惩罚
+- **完成奖励**：在目标点稳定悬停一定时间后给予一次性大额奖励
+
+---
+
+## 🗺️ 典型训练命令
+
 ```bash
 # 训练
 python rl_modular.py --task unified --train_mode True --episodes 1000
@@ -68,97 +134,173 @@ python rl_modular.py --task unified --train_mode True --load_model results/unifi
 python rl_modular.py --list_models
 ```
 
-### 高级使用
-```bash
-# 无障碍物训练
-python rl_modular.py --task unified --enable_obstacles False --episodes 1000 --gui False
-
-# 有障碍物评估
-python rl_modular.py --task unified --enable_obstacles True --train_mode False --gui True --duration_sec 60
-
-# 轨迹跟踪任务
-python rl_modular.py --task trajectory --trajectory_type figure8 --episodes 500
-```
-
-## ✅ 优势
-
-### 1. **模块化设计**
-- 每个类都有单一职责
-- 易于测试和维护
-- 代码重用性高
-
-### 2. **配置管理**
-- 使用 dataclass 管理配置
-- 类型安全和自动验证
-- 易于扩展新参数
-
-### 3. **错误处理**
-- 更好的异常处理
-- 用户友好的错误信息
-- 优雅的失败恢复
-
-### 4. **可扩展性**
-- 易于添加新任务类型
-- 插件式架构
-- 松耦合设计
-
-## 🔄 从原版本迁移
-
-### 兼容性
-- 所有命令行参数保持不变
-- 行为和结果完全一致
-- 可以与原版本并行使用
-
-### 推荐迁移步骤
-1. **测试新版本**: 使用相同参数运行确保功能正常
-2. **逐步切换**: 可以同时保留两个版本
-3. **自定义扩展**: 基于模块化结构添加新功能
-
-## 🛠️ 开发和扩展
-
-### 添加新任务类型
-1. 在 `environment.py` 中添加环境配置
-2. 在 `EnvironmentFactory` 中注册新环境
-3. 更新配置和参数解析
-
-### 添加新功能
-1. 确定功能属于哪个模块
-2. 扩展相应的类
-3. 更新 `__init__.py` 导出
-
-### 自定义配置
-```python
-from rl_framework import TrainingConfig, DroneRLTrainer
-
-# 自定义配置
-config = TrainingConfig(
-    task="unified",
-    episodes=2000,
-    learning_rate=1e-4,
-    enable_obstacles=True
-)
-
-# 使用自定义配置
-trainer = DroneRLTrainer(config, env_config, model_config)
-```
+---
 
 ## 📝 注意事项
 
-1. **导入路径**: 确保 `rl_framework` 在 Python 路径中
-2. **依赖项**: 所有原始依赖项仍然需要
-3. **文件权限**: 脚本具有可执行权限
+1. **观测空间和动作空间如有修改，需重新训练模型**
+2. **建议使用GPU加速训练**
+3. **奖励函数可根据实际任务需求自定义调整**
+4. **如需扩展新任务/环境，建议参考`DRLAviary.py`的实现方式**
 
-## 🐛 故障排除
+---
 
-### 模块导入问题
-```bash
-# 确保在正确目录下运行
-cd /path/to/gym-pybullet-drones/gym_pybullet_drones/examples/
-python rl_modular.py --help
+## 📚 参考
+- [Stable-Baselines3官方文档](https://stable-baselines3.readthedocs.io/)
+- [PyBullet官方文档](https://pybullet.org/)
+- [gymnasium官方文档](https://gymnasium.farama.org/)
+
+---
+## English
+
+# Modular RL Framework for Drone Control (Unified Task Only)
+
+## 📁 Directory Structure
+
+```
+gym_pybullet_drones/scripts/
+drl.py                   # Main script
+rl_framework/            # Modular framework directory
+├── __init__.py          # Package initialization and exports
+├── config.py            # Config classes (TrainingConfig, EnvironmentConfig, ModelConfig)
+├── notifications.py     # System notification management
+├── environment.py       # Environment factory and config (UnifiedAviary only)
+├── model_manager.py     # Model loading, saving, management
+├── trainer.py           # Main trainer class
+└── utils.py             # Utility functions
+
+gym_pybullet_drones/envs/DRLAviary.py # Core RL environment definition
 ```
 
-### 依赖问题
-```bash
-# 检查所有依赖
-pip list | grep -E "(stable-baselines3|gym|pybullet)"
+---
+
+## 🔍 Main Modules & Functionality
+
+### 1. `drl.py`
+- Command-line entry script for argument parsing, config generation, and launching training/evaluation.
+- Supports training, evaluation, model management, and resuming from checkpoints.
+
+### 2. `rl_framework/config.py`
+- `TrainingConfig`: Training parameters (task type, learning rate, episodes, etc.)
+- `EnvironmentConfig`: Environment parameters (observation/action type, GUI, etc.)
+- `ModelConfig`: Model parameters (save path, load existing model, etc.)
+
+### 3. `rl_framework/environment.py`
+- `EnvironmentFactory`: Creates RL environment based on config (currently UnifiedAviary/DRLAviary only)
+- Auto-injects environment parameters, supports obstacles, target points, etc.
+
+### 4. `rl_framework/model_manager.py`
+- `ModelManager`: Handles model saving, loading, management, weight transfer, model listing
+- Supports Stable-Baselines3 PPO model compatibility
+
+### 5. `rl_framework/trainer.py`
+- `DroneRLTrainer`: Main training loop, evaluation loop, logging/visualization, performance stats
+- Supports checkpointing, periodic evaluation, auto-saving best model
+
+### 6. `rl_framework/utils.py`
+- `create_argument_parser`: Command-line argument parsing
+- Other helper functions
+
+### 7. `gym_pybullet_drones/envs/DRLAviary.py`
+- Core RL environment: defines observation space, action space, reward function, termination conditions, etc.
+- Supports multi-task fusion: obstacles, target navigation, hovering
+
+---
+
+## 🤖 DRL Algorithm & Environment
+
+### Algorithm Framework
+- Uses [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3) PPO algorithm
+- Supports multi-threaded sampling, checkpointing, periodic evaluation, auto-saving best model
+- Customizable network architecture, learning rate, reward function, etc.
+
+### Training Flow
+1. Parse command-line arguments, generate config objects
+2. Create environment (DRLAviary), auto-inject obstacles, target points, etc.
+3. Initialize PPO agent, load or create model
+4. Enter main training loop, with periodic evaluation and saving
+5. After training, evaluate or continue training as needed
+
+---
+
+## 🧠 Observation Space
+
+The environment observation is a 1D vector containing all information needed for the agent to learn specific skills. Each item serves a distinct purpose:
+
+| Index Range   | Meaning                        | Purpose/Explanation |
+|---------------|-------------------------------|---------------------|
+| 0-2           | Position (x/y/z)               | Absolute drone position for global localization and navigation |
+| 3-5           | Attitude (Roll, Pitch, Yaw)    | Attitude awareness for stability and control |
+| 6-8           | Linear Velocity (x/y/z)        | Velocity awareness for speed control and hovering |
+| 9-11          | Angular Velocity               | Attitude change rate for constraining and suppressing rotation |
+| 12-71         | Motor RPM History (4 motors x 15 steps) | Motion smoothness, dynamics memory, helps learn dynamic constraints and smooth actions |
+| 72-83         | Lidar (12 directions)          | Obstacle perception, key for obstacle avoidance |
+| 84-86         | Target Position (world frame)  | Global navigation, helps move toward the target |
+| 87-89         | Target Position (body frame)   | Local navigation, enables fine adjustment in body frame |
+| 90-92         | Body Frame Velocity            | Local velocity control for fine multi-directional adjustment and deceleration |
+| 93            | Euclidean Distance to Target   | Distance reward, task completion criterion |
+| 94            | Target Angle (relative yaw)    | Heading adjustment, helps learn to turn toward the target |
+| 95-96         | Angle sin/cos representation   | Smooth angle representation, removes discontinuity for neural networks |
+
+> **Total Dimensions** = 97 (update if extended)
+
+#### Example Observation Vector
 ```
+[pos_x, pos_y, pos_z, roll, pitch, yaw, vx, vy, vz, wx, wy, wz, motor1_hist..., motor4_hist..., lidar1, ..., lidar12, target_x_world, target_y_world, target_z_world, target_x_body, target_y_body, target_z_body, body_vx, body_vy, body_vz, distance, angle, sin(angle), cos(angle)]
+```
+
+---
+
+## 🎮 Action Space
+
+- **Type**: Continuous (Box)
+- **Dimensions**: 4
+- **Meaning**: RPMs for four motors, typically in [0, MAX_RPM]
+- **Interface**: `env.action_space = spaces.Box(low=0, high=MAX_RPM, shape=(4,), dtype=np.float32)`
+- **Agent Output**: Each step outputs a 4D vector, each for one motor
+
+---
+
+## 🏆 Reward Design
+
+- **Navigation Reward**: Encourages approaching the target, inversely proportional to distance
+- **Multi-directional Velocity Reward**: Encourages moving in the correct direction in body frame (forward/backward, left/right, up/down)
+- **Yaw Suppression Reward**: Suppresses unnecessary yaw rotation near the target
+- **Attitude/Angular Velocity Reward**: Constrains roll/pitch/yaw angular velocity, stricter yaw requirement when hovering
+- **Hovering Reward**: Rewards stable hovering near the target with low velocity/angular velocity
+- **Obstacle Avoidance Reward**: Positive reward for staying away from obstacles, penalty for approaching/colliding
+- **Completion Reward**: Large one-time reward for stable hovering at the target for a set duration
+
+---
+
+## 🗺️ Typical Training Commands
+
+```bash
+# Training
+python rl_modular.py --task unified --train_mode True --episodes 1000
+
+# Evaluation
+python rl_modular.py --task unified --train_mode False --gui True
+
+# Continue Training
+python rl_modular.py --task unified --train_mode True --load_model results/unified/best_model.zip
+
+# List Available Models
+python rl_modular.py --list_models
+```
+
+---
+
+## 📝 Notes
+
+1. **If the observation or action space changes, retrain the model**
+2. **GPU acceleration is recommended for training**
+3. **Reward function can be customized for specific tasks**
+4. **To extend new tasks/environments, refer to `DRLAviary.py` implementation**
+
+---
+
+## 📚 References
+- [Stable-Baselines3 Documentation](https://stable-baselines3.readthedocs.io/)
+- [PyBullet Documentation](https://pybullet.org/)
+- [gymnasium Documentation](https://gymnasium.farama.org/)

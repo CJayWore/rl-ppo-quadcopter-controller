@@ -24,7 +24,7 @@ Usage Examples:
     python drl.py --task unified --train_mode True --episodes 1000
     
     # Evaluation  
-    python drl.py --task unified --train_mode False --gui True
+    python drl.py --task unified --train_mode False --gui True --duration_sec 180
     
     # Continue training
     python drl.py --task unified --train_mode True --load_model results/unified/best_model.zip --episodes 10000

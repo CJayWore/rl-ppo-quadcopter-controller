@@ -127,7 +127,7 @@ class DroneRLTrainer:
                 self.training_config.trajectory_type, 
                 **env_kwargs
             ),
-            n_envs=16
+            n_envs=1
         )
         
         eval_env_raw = make_vec_env(
@@ -136,7 +136,7 @@ class DroneRLTrainer:
                 self.training_config.trajectory_type, 
                 **env_kwargs
             ),
-            n_envs=8
+            n_envs=1
         )
         
         # Setup VecNormalize

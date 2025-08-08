@@ -114,11 +114,15 @@ class DRLAviary(BaseRLAviary):
             original_obs_dim = original_obs_space.shape[0]
         
         # 添加的观察维度
-        num_lidar_rays = 12     # 12个方向的激光雷达
-        target_info = 3         # 相对目标位置(3)
+        num_lidar_rays = 12          # 12个方向的激光雷达
+        target_info_world = 3        # 世界坐标系相对目标位置
+        target_info_body = 3         # 机体坐标系相对目标位置 - 新增
+        velocity_body = 3            # 机体坐标系速度 - 新增
+        distance_info = 1            # 距离信息 - 新增
+        angle_info = 3               # 角度信息 (angle + sin + cos) - 新增
         
-        # 计算新的观察空间维度
-        new_obs_dim = original_obs_dim + num_lidar_rays + target_info
+        # 🔧 更新总维度
+        new_obs_dim = original_obs_dim + num_lidar_rays + target_info_world + target_info_body + velocity_body + distance_info + angle_info
         
         # 重新定义观察空间
         self.observation_space = spaces.Box(
@@ -130,7 +134,7 @@ class DRLAviary(BaseRLAviary):
         
         print(f"[DRLAviary] Original obs dim: {original_obs_dim}")
         print(f"[DRLAviary] New obs dim: {new_obs_dim}")
-        print(f"[DRLAviary] Added: {num_lidar_rays} lidar + {target_info} target")
+        print(f"[DRLAviary] Added: {num_lidar_rays} lidar + {target_info_world} world_target + {target_info_body} body_target + {velocity_body} body_vel + {distance_info + angle_info} dist_angle")
 
     def _get_lidar_readings(self, drone_pos):
         """获取12个方向的激光雷达读数"""
@@ -169,19 +173,24 @@ class DRLAviary(BaseRLAviary):
         return np.array(distances)
 
     def _update_hover_timer(self, drone_pos):
-        """更新悬停计时器（不影响奖励状态）"""
+        """更新悬停计时器（同时考虑位置和角速度稳定性）"""
+        state = self._getDroneStateVector(0)
+        angular_vel = state[13:16]
+        angular_velocity_norm = np.linalg.norm(angular_vel)
+        
         distance_to_target = np.linalg.norm(self.TARGET_POS - drone_pos)
         
-        if distance_to_target < self.HOVER_THRESHOLD:
+        # 🔧 修改：同时满足位置和角速度条件才算有效悬停
+        if (distance_to_target < self.HOVER_THRESHOLD and 
+            angular_velocity_norm < 0.3):  # 角速度阈值
             self.time_at_target += 1.0 / self.CTRL_FREQ
         else:
-            self.time_at_target = 0  # 离开目标区域时重置
+            self.time_at_target = 0  # 不满足条件时重置
 
     def _computeObs(self):
         """Override to include lidar and target information in the observation"""
         # 获取基础观察
         base_obs = super()._computeObs()
-        # print(f"[DEBUG] Base obs shape: {base_obs.shape}")
         
         # 确保base_obs是1维数组
         if isinstance(base_obs, np.ndarray):
@@ -189,26 +198,53 @@ class DRLAviary(BaseRLAviary):
                 base_obs = base_obs.flatten()
         else:
             base_obs = np.array(base_obs).flatten()
-
-        # print(f"[DEBUG] Flattened base obs shape: {base_obs.shape}")
         
         state = self._getDroneStateVector(0)
         current_pos = state[0:3]
+        rpy = state[7:10]
+        current_vel = state[10:13]
         
         lidar_readings = self._get_lidar_readings(current_pos)
-        # print(f"[DEBUG] Lidar readings shape: {lidar_readings.shape}")
-        
         relative_target = self.TARGET_POS - current_pos
-        # print(f"[DEBUG] Relative target shape: {relative_target.shape}")
         
-        enhanced_obs = np.concatenate([
-            base_obs, # base observation: x,y,z, roll, pitch, yaw, vx, vy, vz, angular_velocity_x, angular_velocity_y, angular_velocity_z,
-            lidar_readings, # 12 lidar readings
-            relative_target # relative target position: x, y, z
+        # 🔧 新增：基于机体坐标系的相对目标位置
+        # 将世界坐标系中的相对目标位置转换到机体坐标系
+        yaw = rpy[2]
+        cos_yaw, sin_yaw = np.cos(yaw), np.sin(yaw)
+        
+        # 旋转矩阵（只考虑yaw，因为roll和pitch主要用于控制移动）
+        relative_target_body = np.array([
+            cos_yaw * relative_target[0] + sin_yaw * relative_target[1],  # 前后方向
+            -sin_yaw * relative_target[0] + cos_yaw * relative_target[1], # 左右方向
+            relative_target[2]  # 上下方向
         ])
         
-        # print(f"[DEBUG] Final obs shape: {enhanced_obs.shape}")
-        # print(f"[DEBUG] Expected obs space: {self.observation_space.shape}")
+        # 🔧 新增：基于机体坐标系的速度分量
+        velocity_body = np.array([
+            cos_yaw * current_vel[0] + sin_yaw * current_vel[1],  # 前后速度
+            -sin_yaw * current_vel[0] + cos_yaw * current_vel[1], # 左右速度
+            current_vel[2]  # 上下速度
+        ])
+        
+        # 🔧 新增：到目标的距离和方向信息
+        distance_to_target = np.linalg.norm(relative_target)
+        target_angle = np.arctan2(relative_target[1], relative_target[0]) - yaw
+        # 规范化角度到 [-π, π]
+        while target_angle > np.pi:
+            target_angle -= 2 * np.pi
+        while target_angle < -np.pi:
+            target_angle += 2 * np.pi
+        
+        enhanced_obs = np.concatenate([
+            base_obs,                    # 原始观察
+            lidar_readings,              # 12个激光雷达读数
+            relative_target,             # 世界坐标系相对目标位置 (3)
+            relative_target_body,        # 机体坐标系相对目标位置 (3) - 新增
+            velocity_body,               # 机体坐标系速度 (3) - 新增
+            [distance_to_target],        # 到目标距离 (1) - 新增
+            [target_angle],              # 目标角度 (1) - 新增
+            [np.sin(target_angle), np.cos(target_angle)]  # 角度的sin/cos表示 (2) - 新增
+        ])
         
         return enhanced_obs.astype(np.float32)
     
@@ -645,52 +681,102 @@ class DRLAviary(BaseRLAviary):
     def _navigationReward(self):
         state = self._getDroneStateVector(0)
         current_pos = state[0:3]
+        current_vel = state[10:13]
+        rpy = state[7:10]
+        
         position_error = self.TARGET_POS - current_pos
         current_distance = np.linalg.norm(position_error)
 
-        distance_reward = 0
+        # 原有的距离奖励
         distance_reward = min(1000.0, 10.0 / (1e-6 + current_distance))
-        # //distance_reward = -current_distance**0.5
-
-
-        # if current_distance >= 4.0:
-        #     distance_reward = 100/(current_distance)  # 基于距离的奖励，距离越近奖励越高
-        # else:
-        #     distance_reward = np.exp(-distance_reward) * 100  # 距离小于4时，使用指数衰减奖励
-        # distance_reward = -10 * (1 - np.exp(-0.1 * current_distance**2))
+        
         delta_distance = (self.last_distance_to_target - current_distance)
         approaching_reward = 0
         if delta_distance > 0:
             approaching_reward = delta_distance * 10.0
         self.last_distance_to_target = current_distance
 
-        postion_precision_reward = 0
+        # 🔧 新增：多方向控制奖励
+        # 将位置误差转换到机体坐标系
+        yaw = rpy[2]
+        cos_yaw, sin_yaw = np.cos(yaw), np.sin(yaw)
+        
+        error_body = np.array([
+            cos_yaw * position_error[0] + sin_yaw * position_error[1],   # 前后误差
+            -sin_yaw * position_error[0] + cos_yaw * position_error[1],  # 左右误差
+            position_error[2]  # 上下误差
+        ])
+        
+        velocity_body = np.array([
+            cos_yaw * current_vel[0] + sin_yaw * current_vel[1],   # 前后速度
+            -sin_yaw * current_vel[0] + cos_yaw * current_vel[1],  # 左右速度
+            current_vel[2]  # 上下速度
+        ])
+        
+        # 🔧 多方向速度奖励：奖励在正确方向的速度分量
+        forward_backward_reward = 0
+        left_right_reward = 0
+        up_down_reward = 0
+        
+        # 如果需要前进，奖励前进速度；如果需要后退，奖励后退速度
+        if abs(error_body[0]) > 0.1:  # 前后方向有明显误差
+            desired_forward_vel = np.clip(error_body[0] * 2.0, -2.0, 2.0)  # 期望的前后速度
+            forward_backward_reward = 5.0 * max(0, 1.0 - abs(velocity_body[0] - desired_forward_vel) / 2.0)
+        
+        # 左右方向类似
+        if abs(error_body[1]) > 0.1:  # 左右方向有明显误差
+            desired_lateral_vel = np.clip(error_body[1] * 2.0, -2.0, 2.0)  # 期望的左右速度
+            left_right_reward = 5.0 * max(0, 1.0 - abs(velocity_body[1] - desired_lateral_vel) / 2.0)
+        
+        # 上下方向
+        if abs(error_body[2]) > 0.1:  # 上下方向有明显误差
+            desired_vertical_vel = np.clip(error_body[2] * 1.5, -1.5, 1.5)  # 期望的上下速度
+            up_down_reward = 5.0 * max(0, 1.0 - abs(velocity_body[2] - desired_vertical_vel) / 1.5)
+        
+        multi_direction_reward = forward_backward_reward + left_right_reward + up_down_reward
+
+        # 原有的精度奖励
         k = 0.3
         x_penalty = 1.0-np.tanh(k * abs(position_error[0]))
         y_penalty = 1.0-np.tanh(k * abs(position_error[1]))
         z_penalty = 1.0-np.tanh(k * abs(position_error[2]))
-        
-        # 给Z轴稍高权重但不过分
         position_precision_reward = (x_penalty + y_penalty + z_penalty) * 60
 
+        # 高度安全奖励
         height_safety_reward = 0
-        if current_pos[2] < 0.3:  # 危险低高度
+        if current_pos[2] < 0.3:
             height_safety_reward = -5.0 * (0.3 - current_pos[2])
-        elif current_pos[2] > 0.5:  # 安全高度
+        elif current_pos[2] > 0.5:
             height_safety_reward = 2.0
 
+        # 🔧 新增：抑制不必要的yaw旋转
+        yaw_stability_reward = 0
+        if current_distance < self.HOVER_THRESHOLD * 2:  # 接近目标时
+            angular_vel = state[13:16]
+            yaw_angular_vel = abs(angular_vel[2])
+            yaw_stability_reward = 3.0 * max(0, 1.0 - yaw_angular_vel / 0.5)
+
         navigation_reward = (
-            distance_reward
-            + approaching_reward
-            + position_precision_reward
-            + height_safety_reward
-            )
+            distance_reward +
+            approaching_reward +
+            position_precision_reward +
+            height_safety_reward +
+            multi_direction_reward +  # 新增
+            yaw_stability_reward      # 新增
+        )
         
         return navigation_reward, {
             'distance_reward': distance_reward,
             'approaching_reward': approaching_reward,
             'position_precision_reward': position_precision_reward,
             'height_safety_reward': height_safety_reward,
+            'multi_direction_reward': multi_direction_reward,
+            'forward_backward_reward': forward_backward_reward,
+            'left_right_reward': left_right_reward,
+            'up_down_reward': up_down_reward,
+            'yaw_stability_reward': yaw_stability_reward,
+            'error_body': error_body,
+            'velocity_body': velocity_body,
             'x_penalty': x_penalty,
             'y_penalty': y_penalty,
             'z_penalty': z_penalty
@@ -698,52 +784,87 @@ class DRLAviary(BaseRLAviary):
     
     def _stabilityPenalty(self):
         state = self._getDroneStateVector(0)
-        # current_pos = state[0:3]
-        quaternion = state[3:7]  # 四元数表示的姿态
+        current_pos = state[0:3]
         rpy = state[7:10]
         current_vel = state[10:13]
-        angular_vel = state[13:16]  # angular velocity
-        last_action = state[16:20]  # last action (RPMs)
+        angular_vel = state[13:16]
+        last_action = state[16:20]
 
         # 姿态稳定性
         max_tilt = np.pi/12  # 15度作为参考
         roll_stability = max(0, 10.0 * (1.0 - abs(rpy[0]) / max_tilt))
         pitch_stability = max(0, 10.0 * (1.0 - abs(rpy[1]) / max_tilt))
-        attitude_penalty = roll_stability + pitch_stability
 
-        max_ang_vel = 2.0 
-
-        angular_velocity_reward = 5.0 * max(0, 1.0 - np.linalg.norm(angular_vel) / max_ang_vel)
-        # linear_velocity_penalty = -0.5 * (current_vel[0]**2 + current_vel[1]**2 + current_vel[2]**2)
+        # 🔧 改进：分别控制各轴角速度，yaw轴在悬停时要求更严格
+        distance_to_target = np.linalg.norm(current_pos - self.TARGET_POS)
         
-        # RPM smoothness penalty using available last_action
-        rpm_smoothness_penalty = -0.1 * np.var(last_action) / (np.mean(last_action) + 1e-6)  # normalized by mean RPM
+        max_roll_pitch_ang_vel = 1.5
+        max_yaw_ang_vel = 1.0 if distance_to_target > self.HOVER_THRESHOLD else 0.3  # 悬停时更严格
+
+        roll_ang_vel_reward = 5.0 * max(0, 1.0 - abs(angular_vel[0]) / max_roll_pitch_ang_vel)
+        pitch_ang_vel_reward = 5.0 * max(0, 1.0 - abs(angular_vel[1]) / max_roll_pitch_ang_vel)
+        yaw_ang_vel_reward = 8.0 * max(0, 1.0 - abs(angular_vel[2]) / max_yaw_ang_vel)  # yaw权重更高
+
+        angular_velocity_reward = roll_ang_vel_reward + pitch_ang_vel_reward + yaw_ang_vel_reward
+
+        # RPM平滑性
+        rpm_smoothness_penalty = -0.1 * np.var(last_action) / (np.mean(last_action) + 1e-6)
+
+        # 🔧 新增：在悬停区域时，额外奖励低yaw角速度
+        hover_yaw_bonus = 0
+        if distance_to_target < self.HOVER_THRESHOLD:
+            hover_yaw_bonus = 5.0 * max(0, 1.0 - abs(angular_vel[2]) / 0.1)  # 非常严格的yaw要求
+
+        # 🔧 新增：yaw稳定性奖励 - 在目标附近时鼓励保持固定yaw
+        yaw_stability = 0
+        if distance_to_target < self.HOVER_THRESHOLD:
+            # 在悬停区域内，强烈鼓励yaw稳定
+            if not hasattr(self, 'target_yaw'):
+                self.target_yaw = rpy[2]  # 记录第一次进入悬停区域时的yaw
+            
+            yaw_error = abs(rpy[2] - self.target_yaw)
+            # 处理yaw角度的循环性质
+            if yaw_error > np.pi:
+                yaw_error = 2*np.pi - yaw_error
+            
+            # yaw稳定性奖励，距离目标越近要求越严格
+            yaw_weight = 15.0 * (1.0 - distance_to_target / self.HOVER_THRESHOLD)
+            yaw_stability = max(0, yaw_weight * (1.0 - yaw_error / np.pi))
+
+        attitude_penalty = roll_stability + pitch_stability + yaw_stability
 
         stability_penalty = (
             attitude_penalty +
-            angular_velocity_reward 
-            # rpm_smoothness_penalty
+            angular_velocity_reward +
+            hover_yaw_bonus  # 新增
         )
 
         return stability_penalty, {
             'attitude_penalty': attitude_penalty,
+            'roll_stability': roll_stability,
+            'pitch_stability': pitch_stability,
+            'yaw_stability': yaw_stability,
             'angular_velocity_reward': angular_velocity_reward,
+            'roll_ang_vel_reward': roll_ang_vel_reward,
+            'pitch_ang_vel_reward': pitch_ang_vel_reward,
+            'yaw_ang_vel_reward': yaw_ang_vel_reward,
+            'hover_yaw_bonus': hover_yaw_bonus,
             'rpm_smoothness_penalty': rpm_smoothness_penalty,
             'rpy': rpy,
-            'angular_vel_norm': np.linalg.norm(angular_vel)
+            'angular_vel': angular_vel,
+            'distance_to_target': distance_to_target,
+            'target_yaw': getattr(self, 'target_yaw', None)
         }
 
     def _hoveringReward(self):
         state = self._getDroneStateVector(0)
         current_pos = state[0:3]
         current_vel = state[10:13]
+        angular_vel = state[13:16]  # 🔧 添加角速度
         
         distance_to_target = np.linalg.norm(current_pos - self.TARGET_POS)
         velocity_norm = np.linalg.norm(current_vel)
-        # 悬停稳定性奖励 - 接近目标时奖励低速度
-        # speed_reward = 0
-        # if distance_to_target < self.HOVER_THRESHOLD:
-        #     speed_reward = 100.0/(1e-6 + velocity_norm)  # 接近目标时速度越低奖励越高
+        angular_velocity_norm = np.linalg.norm(angular_vel)  # 🔧 计算角速度模长
         
         ################################################################################################
         MAX_SPEED_REWARD = 100.0  # Max reward for a perfect hover at the target center.
@@ -760,16 +881,23 @@ class DRLAviary(BaseRLAviary):
         # Calculate a velocity-based factor (0 to 1) using another Gaussian function.
         velocity_factor = np.exp(-VELOCITY_DECAY * velocity_norm**2)
         
-        # The final reward is the product of these smooth factors.
-        speed_reward = MAX_SPEED_REWARD * distance_factor * velocity_factor
+        # 🔧 新增：角速度稳定性因子
+        ANGULAR_VELOCITY_DECAY = 1.0  # 角速度衰减参数
+        angular_velocity_factor = np.exp(-ANGULAR_VELOCITY_DECAY * angular_velocity_norm**2)
+        
+        # 🔧 修改：综合考虑线性和角速度
+        speed_reward = MAX_SPEED_REWARD * distance_factor * velocity_factor * angular_velocity_factor
         ################################################################################################
 
-        # 悬停时间奖励 - 在目标附近停留的时间
+        # 悬停时间奖励
         hover_time_reward = 0
         if distance_to_target < self.HOVER_THRESHOLD:
-            # 使用 min() 函数来给奖励设置一个上限，例如20.0
-            # 这样既能鼓励持续悬停，又不会让奖励无限增长
-            hover_time_reward = min(20.0, self.time_at_target * 2.0)
+            # 🔧 新增：只有在角速度也足够小时才计算悬停时间
+            if angular_velocity_norm < 0.3:  # 角速度阈值
+                hover_time_reward = min(20.0, self.time_at_target * 2.0)
+            else:
+                # 如果在悬停区域但角速度太大，重置悬停时间
+                self.time_at_target = max(0, self.time_at_target - 0.1)
         
         hovering_reward = speed_reward + hover_time_reward
 
@@ -777,8 +905,10 @@ class DRLAviary(BaseRLAviary):
             'speed_reward': speed_reward,
             'hover_time_reward': hover_time_reward,
             'velocity_norm': velocity_norm,
+            'angular_velocity_norm': angular_velocity_norm,
             'distance_to_target': distance_to_target,
-            'in_hover_zone': distance_to_target < self.HOVER_THRESHOLD
+            'in_hover_zone': distance_to_target < self.HOVER_THRESHOLD,
+            'angular_stable': angular_velocity_norm < 0.3
         }
     
     def _obstacleAvoidanceReward(self):
@@ -854,15 +984,25 @@ class DRLAviary(BaseRLAviary):
             # print(f"    * X penalty: {nav_details['x_penalty']:.3f}")
             # print(f"    * Y penalty: {nav_details['y_penalty']:.3f}")
             # print(f"    * Z penalty: {nav_details['z_penalty']:.3f}")
+            # print(f"  - Multi-direction: {nav_details['multi_direction_reward']:.2f}")
+            # print(f"    * Forward/Backward: {nav_details['forward_backward_reward']:.2f}")
+            # print(f"    * Left/Right: {nav_details['left_right_reward']:.2f}")
+            # print(f"    * Up/Down: {nav_details['up_down_reward']:.2f}")
+            # print(f"  - Yaw Stability: {nav_details['yaw_stability_reward']:.2f}")
             
             # print(f"Stability ({stability_reward:.2f}):")
-            # print(f"  - Attitude: {stab_details['attitude_penalty']:.2f} (RPY: {stab_details['rpy']})")
-            # print(f"  - Angular Vel: {stab_details['angular_velocity_reward']:.2f} (|ω|: {stab_details['angular_vel_norm']:.3f})")
-            # print(f"  - RPM Smoothness: {stab_details['rpm_smoothness_penalty']:.2f}")
+            # print(f"  - Attitude: {stab_details['attitude_penalty']:.2f}")
+            # print(f"    * Roll: {stab_details['roll_stability']:.2f}")
+            # print(f"    * Pitch: {stab_details['pitch_stability']:.2f}")
+            # print(f"    * Yaw: {stab_details['yaw_stability']:.2f} (target: {stab_details['target_yaw']})")
+            # print(f"  - Angular Vel: {stab_details['angular_velocity_reward']:.2f}")
+            # print(f"    * Yaw ω: {stab_details['yaw_ang_vel_reward']:.2f} (|ωz|: {abs(stab_details['angular_vel'][2]):.3f})")
+            # print(f"  - Hover Yaw Bonus: {stab_details['hover_yaw_bonus']:.2f}")
 
             # print(f"Hovering ({hovering_reward:.2f}):")
-            # print(f"  - Speed: {hover_details['speed_reward']:.2f} (|v|: {hover_details['velocity_norm']:.3f})")
-            # print(f"  - Hover Time: {hover_details['hover_time_reward']:.2f} (in zone: {hover_details['in_hover_zone']})")
+            # print(f"  - Speed: {hover_details['speed_reward']:.2f}")
+            # print(f"  - Angular stable: {hover_details['angular_stable']}")
+            # print(f"  - Hover Time: {hover_details['hover_time_reward']:.2f}")
             
             # print(f"Obstacles ({obstacle_reward:.2f}):")
 
@@ -1012,7 +1152,10 @@ class DRLAviary(BaseRLAviary):
         self.target_body_ids = []
 
         self.time_at_target = 0
-        # self.navigation_progress = 0.0
+        
+        # 🔧 新增：重置yaw目标
+        if hasattr(self, 'target_yaw'):
+            delattr(self, 'target_yaw')
         
         # Randomise start and target positions if enabled
         if self.RANDOMIZE_INIT:
