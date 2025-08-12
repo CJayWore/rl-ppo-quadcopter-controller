@@ -4,8 +4,8 @@
   "episodes": 10000,
   "learning_rate": 0.0003,
   "target_reward": 1000000.0,
-  "timestamp": "08.08.2025_00.23.41",
-  "session_folder": "results/unified/session_08.07.2025_16.48.48",
+  "timestamp": "08.12.2025_04.37.47",
+  "session_folder": "results/unified/session_08.11.2025_19.46.13",
   "total_timesteps": 10000000,
   "enable_obstacles": true
 }

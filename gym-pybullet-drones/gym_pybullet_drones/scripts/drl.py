@@ -31,6 +31,26 @@ Usage Examples:
     
     # List available models
     python drl.py --list_models
+
+-------------------------------------------------------------------------------------------------------------
+    # Enable Gaussian noise
+    --enable_noise True --noise_level light
+    --noise_level light/medium/heavy
+    -- noise_decay True/False (default: True)
+
+-------------------------------------------------------------------------------------------------------------
+    # Performance Evaluation
+    # Evaluate default model (results/unified/best_model.zip) with 100 episodes
+    python drl.py --performance_eval --eval_episodes 100
+    
+    # Evaluate specific model with comprehensive metrics
+    python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 100
+    
+    # Detailed evaluation with custom duration and LaTeX output
+    python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 50 --eval_duration 180 --generate_latex True
+    
+    # Evaluation with custom output directory for papers
+    python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --output_dir paper_results --generate_latex True
 """
 
 import os
@@ -45,9 +65,9 @@ from rl_framework import (
     ModelConfig,
     DroneRLTrainer,
     ModelManager,
+    DronePerformanceLogger,
     create_argument_parser
 )
-
 
 def main():
     """Main entry point for the modular RL script."""
@@ -83,6 +103,30 @@ def main():
     if args.list_models:
         model_manager = ModelManager(args.output_folder)
         model_manager.list_available_models()
+        return
+    
+    # Handle performance evaluation requests
+    if args.performance_eval:
+        print("📊 Running Performance Evaluation...")
+        
+        # Use custom output directory if specified
+        output_folder = args.output_dir if args.output_dir else args.output_folder
+        logger = DronePerformanceLogger(output_folder)
+        
+        model_name = args.model_names[0] if args.model_names and len(args.model_names) > 0 else None
+        num_episodes = args.eval_episodes
+        
+        # Evaluate the model
+        results = logger.evaluate_model(args.evaluate_model, num_episodes, model_name, args.eval_duration)
+        
+        if results:
+            # Generate reports and visualizations
+            logger.generate_performance_report()
+            if args.generate_latex:
+                logger.generate_latex_table()
+            logger.visualize_performance(save_plots=True)
+        
+        print(f"✅ Performance evaluation completed!")
         return
     
     # Create output folder

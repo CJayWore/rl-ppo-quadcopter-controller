@@ -6,6 +6,17 @@ from gymnasium import spaces
 from gym_pybullet_drones.envs.BaseRLAviary import BaseRLAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics, ActionType, ObservationType
 
+# Import Gaussian Noise functionality
+try:
+    import sys
+    import os
+    sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts', 'rl_framework'))
+    from gaussian_noise import GaussianNoiseManager, NoiseType
+except ImportError:
+    print("⚠️ Gaussian Noise functionality not available - noise parameters will be ignored")
+    GaussianNoiseManager = None
+    NoiseType = None
+
 class DRLAviary(BaseRLAviary):
     """
     Deep RL environment: Navigate to target while avoiding obstacles and hover at destination.
@@ -34,7 +45,12 @@ class DRLAviary(BaseRLAviary):
                  target_radius: float = 0.15,  # Target area radius
                  hover_threshold: float = 0.5,  # Hover precision threshold
                  episode_len_sec: int = 30,
-                 enable_obstacles: bool = True):
+                 enable_obstacles: bool = True,
+                 # Gaussian Noise parameters
+                 enable_noise: bool = False,
+                 noise_level: str = "medium",  # "light", "medium", "heavy"
+                 noise_decay: bool = True,
+                 show_noise_ui: bool = True):
         
         # Task
         self.RANDOMIZE_INIT = randomize_init
@@ -69,6 +85,24 @@ class DRLAviary(BaseRLAviary):
         self.target_visual_id = None
         self.connection_line_id = None
         self.path_markers = []
+
+        # Gaussian Noise parameters
+        self.enable_noise = enable_noise
+        self.noise_level = noise_level
+        self.noise_decay = noise_decay
+        self.show_noise_ui = show_noise_ui
+        self.total_steps = 0
+        self.total_episodes = 0
+        
+        # Initialize noise manager
+        self.noise_manager = None
+        if self.enable_noise and GaussianNoiseManager is not None:
+            self.noise_manager = self._setup_noise_manager()
+            print(f"🔊 Noise-enhanced environment initialized (level: {noise_level})")
+        elif self.enable_noise and GaussianNoiseManager is None:
+            print("⚠️ Noise requested but GaussianNoiseManager not available")
+        else:
+            print("🔇 Noise-free environment initialized")
 
                 # Camera settings
         self.camera_follow_enabled = True
@@ -135,6 +169,41 @@ class DRLAviary(BaseRLAviary):
         print(f"[DRLAviary] Original obs dim: {original_obs_dim}")
         print(f"[DRLAviary] New obs dim: {new_obs_dim}")
         print(f"[DRLAviary] Added: {num_lidar_rays} lidar + {target_info_world} world_target + {target_info_body} body_target + {velocity_body} body_vel + {distance_info + angle_info} dist_angle")
+
+    def _setup_noise_manager(self):
+        """根据噪声级别创建噪声管理器"""
+        def get_training_progress():
+            # 简单的训练进度估算
+            return min(1.0, self.total_episodes / 1000.0)
+        
+        manager = GaussianNoiseManager(
+            training_progress_callback=get_training_progress,
+            random_seed=None  # 使用随机种子以保证训练多样性
+        )
+        
+        # 设置UI显示（如果支持）
+        if self.show_noise_ui and self.GUI and hasattr(manager, '_setup_ui_display'):
+            try:
+                manager.client_id = getattr(self, 'CLIENT', 0)
+                manager._setup_ui_display()
+            except Exception as e:
+                print(f"⚠️ Could not setup noise UI: {e}")
+        
+        # 根据噪声级别调整参数
+        if self.noise_level == "light":
+            for noise_type in manager.noise_configs:
+                manager.noise_configs[noise_type].std_dev *= 0.5
+        elif self.noise_level == "heavy":
+            for noise_type in manager.noise_configs:
+                manager.noise_configs[noise_type].std_dev *= 1.5
+        # "medium"级别保持默认设置
+        
+        # 设置噪声衰减
+        if not self.noise_decay:
+            for noise_type in manager.noise_configs:
+                manager.noise_configs[noise_type].decay_rate = 0.0
+        
+        return manager
 
     def _get_lidar_readings(self, drone_pos):
         """获取12个方向的激光雷达读数"""
@@ -203,6 +272,23 @@ class DRLAviary(BaseRLAviary):
         current_pos = state[0:3]
         rpy = state[7:10]
         current_vel = state[10:13]
+        angular_vel = state[13:16]
+        
+        # 🔊 Apply sensor noise to state readings if noise is enabled
+        if self.enable_noise and self.noise_manager is not None:
+            # Apply sensor noise to position, velocity, and angular velocity
+            current_pos_noisy, current_vel_noisy, angular_vel_noisy = self.noise_manager.add_sensor_noise(
+                current_pos, current_vel, angular_vel
+            )
+            # Apply attitude noise
+            rpy_noisy = self.noise_manager.add_attitude_noise(rpy)
+            # Apply wind disturbance
+            current_vel_noisy = self.noise_manager.add_wind_disturbance(current_vel_noisy)
+            
+            # Use noisy values for calculations
+            current_pos = current_pos_noisy
+            current_vel = current_vel_noisy
+            rpy = rpy_noisy
         
         lidar_readings = self._get_lidar_readings(current_pos)
         relative_target = self.TARGET_POS - current_pos
@@ -245,6 +331,10 @@ class DRLAviary(BaseRLAviary):
             [target_angle],              # 目标角度 (1) - 新增
             [np.sin(target_angle), np.cos(target_angle)]  # 角度的sin/cos表示 (2) - 新增
         ])
+        
+        # 🔊 Apply observation noise if enabled
+        if self.enable_noise and self.noise_manager is not None:
+            enhanced_obs = self.noise_manager.add_observation_noise(enhanced_obs)
         
         return enhanced_obs.astype(np.float32)
     
@@ -674,8 +764,12 @@ class DRLAviary(BaseRLAviary):
 
     '''
 
-    TODO:
-        - 添加高斯noise扰动
+    Gaussian Noise Integration:
+        ✅ 添加高斯noise扰动 - 已完成集成
+        ✅ 支持传感器噪声、风扰动、动作噪声、观测噪声
+        ✅ 支持训练/评估模式切换
+        ✅ 支持PyBullet UI显示
+        ✅ 支持自适应噪声衰减
 
     '''
     def _navigationReward(self):
@@ -1113,6 +1207,12 @@ class DRLAviary(BaseRLAviary):
     
     def reset(self, seed=None, options=None):
         '''reset state'''
+        # 🔊 Update episode count for noise manager
+        if self.enable_noise and self.noise_manager is not None:
+            self.noise_manager.new_episode()
+        
+        self.total_episodes += 1
+        
         # 记录上一个episode的结束时间
         if self.episode_start_time is not None:
             episode_duration = time.time() - self.episode_start_time
@@ -1194,6 +1294,13 @@ class DRLAviary(BaseRLAviary):
         return self._computeObs(), self._computeInfo()
 
     def step(self, action):
+        # 🔊 Apply action noise if enabled
+        if self.enable_noise and self.noise_manager is not None:
+            action = self.noise_manager.add_action_noise(action)
+            self.noise_manager.step()
+        
+        self.total_steps += 1
+        
         obs, reward, terminated, truncated, info = super().step(action)
         
         if self.GUI:
@@ -1214,6 +1321,58 @@ class DRLAviary(BaseRLAviary):
         if self.GUI and self.step_counter % 1 == 0:
             self._updateCamera()
         
+        # 🔊 Update noise UI if enabled
+        if self.enable_noise and self.noise_manager is not None and self.GUI and self.show_noise_ui:
+            if self.step_counter % 10 == 0:  # Update every 10 steps to avoid performance issues
+                self.noise_manager._update_ui_display()
+        
         return obs, reward, terminated, truncated, info
+
+    # ======================== Gaussian Noise Control Methods ========================
+    
+    def set_training_mode(self, training: bool):
+        """设置训练/评估模式"""
+        if self.noise_manager is not None:
+            self.noise_manager.set_training_mode(training)
+            print(f"🔊 Noise mode set to: {'Training' if training else 'Evaluation'}")
+    
+    def get_noise_statistics(self):
+        """获取噪声统计信息"""
+        if self.noise_manager is not None:
+            return self.noise_manager.get_noise_statistics()
+        return {}
+    
+    def print_noise_stats(self):
+        """打印噪声统计"""
+        if self.noise_manager is not None:
+            print("\n🔊 Gaussian Noise Statistics:")
+            self.noise_manager.print_noise_statistics()
+        else:
+            print("🔇 No noise statistics available (noise disabled)")
+    
+    def toggle_noise_ui(self):
+        """切换噪声UI显示"""
+        if self.enable_noise and self.noise_manager is not None:
+            self.show_noise_ui = not self.show_noise_ui
+            if self.show_noise_ui and self.GUI:
+                self.noise_manager._setup_ui_display()
+            print(f"🔊 Noise UI {'enabled' if self.show_noise_ui else 'disabled'}")
+        else:
+            print("⚠️ Noise not enabled or not available")
+    
+    def get_noise_info(self):
+        """获取噪声配置信息"""
+        if self.noise_manager is not None:
+            return {
+                'enabled': self.enable_noise,
+                'level': self.noise_level,
+                'decay_enabled': self.noise_decay,
+                'ui_enabled': self.show_noise_ui,
+                'training_progress': self.noise_manager.training_progress_callback() if self.noise_manager.training_progress_callback else 0,
+                'total_episodes': self.total_episodes,
+                'total_steps': self.total_steps
+            }
+        else:
+            return {'enabled': False, 'level': 'none'}
 
     

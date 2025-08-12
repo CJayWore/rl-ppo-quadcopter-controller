@@ -11,6 +11,15 @@ from .environment import EnvironmentFactory
 from .model_manager import ModelManager
 from .trainer import DroneRLTrainer
 from .utils import create_argument_parser
+from .gaussian_noise import (
+    GaussianNoiseManager, 
+    NoiseType, 
+    NoiseConfig,
+    create_light_noise_manager,
+    create_heavy_noise_manager,
+    create_wind_focused_noise_manager
+)
+from .performance_evaluation import DronePerformanceLogger, PerformanceMetrics
 
 __version__ = "1.0.0"
 __all__ = [
@@ -21,5 +30,13 @@ __all__ = [
     "EnvironmentFactory",
     "ModelManager", 
     "DroneRLTrainer",
-    "create_argument_parser"
+    "create_argument_parser",
+    "GaussianNoiseManager",
+    "NoiseType",
+    "NoiseConfig",
+    "create_light_noise_manager",
+    "create_heavy_noise_manager", 
+    "create_wind_focused_noise_manager",
+    "DronePerformanceLogger",
+    "PerformanceMetrics"
 ]
