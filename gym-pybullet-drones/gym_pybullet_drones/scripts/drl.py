@@ -40,7 +40,6 @@ Usage Examples:
 
 -------------------------------------------------------------------------------------------------------------
     # Performance Evaluation
-    # Evaluate default model (results/unified/best_model.zip) with 100 episodes
     python drl.py --performance_eval --eval_episodes 100
     
     # Evaluate specific model with comprehensive metrics
