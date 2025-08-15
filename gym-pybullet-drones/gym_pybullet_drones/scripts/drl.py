@@ -45,11 +45,14 @@ Usage Examples:
     # Evaluate specific model with comprehensive metrics
     python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 100
     
+    # Evaluation with GUI visualization (slower but visual)
+    python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 20 --gui True
+    
     # Detailed evaluation with custom duration and LaTeX output
     python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 50 --eval_duration 180 --generate_latex True
     
-    # Evaluation with custom output directory for papers
-    python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --output_dir paper_results --generate_latex True
+    # GUI evaluation with custom output directory for papers
+    python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --output_dir paper_results --generate_latex True --gui True
 """
 
 import os
@@ -107,6 +110,7 @@ def main():
     # Handle performance evaluation requests
     if args.performance_eval:
         print("📊 Running Performance Evaluation...")
+        print(f"🎮 GUI Mode: {'Enabled' if args.gui else 'Disabled'}")
         
         # Use custom output directory if specified
         output_folder = args.output_dir if args.output_dir else args.output_folder
@@ -115,8 +119,8 @@ def main():
         model_name = args.model_names[0] if args.model_names and len(args.model_names) > 0 else None
         num_episodes = args.eval_episodes
         
-        # Evaluate the model
-        results = logger.evaluate_model(args.evaluate_model, num_episodes, model_name, args.eval_duration)
+        # Evaluate the model with GUI support
+        results = logger.evaluate_model(args.evaluate_model, num_episodes, model_name, args.eval_duration, gui_enabled=args.gui)
         
         if results:
             # Generate reports and visualizations

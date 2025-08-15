@@ -4,6 +4,7 @@ Drone Performance Evaluation Module
 
 This module provides comprehensive performance evaluation capabilities for drone RL models,
 including data collection, analysis, and visualization of key performance metrics.
+Uses Logger.py data structure for consistent data collection while providing advanced visualization.
 
 Author: GitHub Copilot Assistant
 Date: August 12, 2025
@@ -25,6 +26,32 @@ from scipy import stats
 from scipy.signal import find_peaks
 import warnings
 warnings.filterwarnings('ignore')
+
+# Add gym wrapper import
+import gymnasium as gym
+
+class ActionReshapeWrapper(gym.Wrapper):
+    """Wrapper to reshape actions for VecEnv compatibility with multi-drone environments."""
+    def __init__(self, env):
+        super().__init__(env)
+        
+    def step(self, action):
+        # Ensure action has the correct shape for multi-drone environment
+        if isinstance(action, np.ndarray) and action.ndim == 1:
+            # Reshape from (action_dim,) to (1, action_dim) for single drone
+            action = action.reshape(1, -1)
+        return self.env.step(action)
+
+# Import Logger class for data collection
+try:
+    from ...utils.Logger import Logger
+except ImportError:
+    # Fallback for direct execution
+    import sys
+    import os
+    utils_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'utils')
+    sys.path.insert(0, utils_path)
+    from Logger import Logger
 
 # Try to import seaborn, use default matplotlib style if not available
 try:
@@ -103,175 +130,216 @@ class PerformanceMetrics:
         return result
 
 
-class DronePerformanceLogger:
+class DronePerformanceLogger(Logger):
     """
     Comprehensive performance evaluation logger for drone RL models.
     
-    This class provides functionality to:
-    1. Collect performance data during evaluation
+    This class extends Logger to provide advanced performance analysis while using
+    the same data collection structure. It provides functionality to:
+    1. Collect performance data using Logger's proven data structure
     2. Compute key performance metrics
-    3. Generate visualizations and reports
+    3. Generate advanced visualizations and reports
     """
     
-    def __init__(self, output_folder: str = "results", logging_freq: int = 240):
+    def __init__(self, output_folder: str = "results", logging_freq: int = 240, 
+                 num_drones: int = 1, duration_sec: int = 0):
         """
         Initialize the performance logger.
         
         Args:
             output_folder: Directory to save results
             logging_freq: Data logging frequency (Hz)
+            num_drones: Number of drones to track
+            duration_sec: Expected duration for preallocation
         """
-        self.output_folder = output_folder
-        self.logging_freq = logging_freq
+        # Initialize parent Logger class
+        super().__init__(logging_freq, output_folder, num_drones, duration_sec)
+        
         self.metrics = PerformanceMetrics()
         self.episode_data = []
-        self.current_episode = {}
+        self.current_episode_idx = 0
         
-        # Create output directories
+        # Create performance analysis directory
         self.performance_dir = os.path.join(output_folder, "performance_analysis")
         os.makedirs(self.performance_dir, exist_ok=True)
         
+        # Store the actual final position from the last step before episode ends
+        # This prevents contamination from environment reset operations
+        self.last_recorded_position = None
+        self.last_recorded_error = None
+        
         # Target position for task completion evaluation
-        self.target_position = np.array([0, 0, 1])  # Default hover target (will be updated from env)
-        self.target_tolerance = 0.15  # meters (increased tolerance for realistic evaluation)
+        self.target_position = np.array([3, 3, 1.5])  # Default target matching DRLAviary
+        self.target_tolerance = 0.15  # meters
         self.required_hover_time = 3.0  # seconds
         
-        # Data collection variables
-        self.step_data = defaultdict(list)
+        # Episode tracking variables
         self.episode_start_time = None
-        self.task_completed = False
-        self.hover_start_time = None
-        self.completion_time = 0.0  # Track individual episode completion time
-        
-        print(f"📊 Performance Logger initialized")
-        print(f"   Output directory: {self.performance_dir}")
-    
-    def start_episode(self) -> None:
-        """Start a new episode for data collection."""
-        self.current_episode = {
-            'step': 0,
-            'positions': [],
-            'velocities': [],
-            'attitudes': [],
-            'controls': [],
-            'errors': [],
-            'rewards': [],
-            'timestamps': [],
-            'safety_events': []
-        }
-        self.episode_start_time = time.time()
+        self.episode_start_counter = 0
         self.task_completed = False
         self.hover_start_time = None
         self.completion_time = 0.0
+        self.target_updated_this_episode = False
         
+        print(f"Performance Logger initialized (extends Logger)")
+        print(f"   Output directory: {self.performance_dir}")
+        print(f"   Logging frequency: {logging_freq} Hz")
+        print(f"   Tracking {num_drones} drone(s)")
+
+    def start_episode(self, drone_id: int = 0) -> None:
+        """Start a new episode for data collection."""
+        self.episode_start_time = time.time()
+        self.episode_start_counter = int(self.counters[drone_id])
+        self.task_completed = False
+        self.hover_start_time = None
+        self.completion_time = 0.0
+        self.current_episode_idx += 1
+        self.target_updated_this_episode = False  # Flag to track target position updates
+        
+        print(f"Episode {self.current_episode_idx} started for drone {drone_id}")
+
     def update_target_position(self, info: Dict) -> None:
         """Update target position from environment info."""
-        if 'target_pos' in info:
+        if 'target_pos' in info and not self.target_updated_this_episode:
             self.target_position = np.array(info['target_pos'])
-            print(f"🎯 Updated target position: {self.target_position}")
-        
-    def log_step(self, obs: np.ndarray, action: np.ndarray, reward: float, 
-                 info: Dict, timestamp: float) -> None:
+            self.target_updated_this_episode = True
+            print(f"Updated target position: {self.target_position}")
+
+    def log_step_with_performance(self, drone: int, timestamp: float, state: np.ndarray,
+                                 action: np.ndarray, reward: float, info: Dict, 
+                                 control: np.ndarray = None) -> None:
         """
-        Log data for a single step.
+        Enhanced log step that combines Logger's data collection with performance tracking.
         
         Args:
-            obs: Observation from environment
-            action: Action taken by agent
+            drone: Drone ID
+            timestamp: Simulation timestamp
+            state: Full state array (20 elements as per Logger)
+            action: Action taken by agent (becomes RPM in state)
             reward: Reward received
             info: Additional information from environment
-            timestamp: Current simulation time
+            control: Control target (12 elements as per Logger)
         """
-        if not hasattr(self, 'current_episode'):
-            self.start_episode()
+        # Use default control array if not provided
+        if control is None:
+            control = np.zeros(12)
         
         # Update target position from environment info
         self.update_target_position(info)
         
-        # Extract position, velocity, and attitude from observation
-        if len(obs) >= 12:  # Kinematic observation
-            position = obs[0:3]
-            velocity = obs[3:6] if len(obs) >= 6 else np.zeros(3)
-            attitude = obs[6:9] if len(obs) >= 9 else np.zeros(3)
-        else:
-            # Handle different observation formats
-            position = obs[0:3] if len(obs) >= 3 else np.zeros(3)
-            velocity = np.zeros(3)
-            attitude = np.zeros(3)
+        # Use parent Logger's log method for consistent data structure
+        self.log(drone, timestamp, state, control)
         
-        # Calculate position error
-        position_error = np.linalg.norm(position - self.target_position)
-        
-        # Log step data
-        self.current_episode['step'] += 1
-        self.current_episode['positions'].append(position.copy())
-        self.current_episode['velocities'].append(velocity.copy())
-        self.current_episode['attitudes'].append(attitude.copy())
-        self.current_episode['controls'].append(action.copy())
-        self.current_episode['errors'].append(position_error)
-        self.current_episode['rewards'].append(reward)
-        self.current_episode['timestamps'].append(timestamp)
-        
-        # Check for task completion (sustained hover at target)
-        if position_error <= self.target_tolerance:
-            if self.hover_start_time is None:
-                self.hover_start_time = timestamp
-                print(f"📍 Started hovering at target (error: {position_error:.3f}m)")
-            elif timestamp - self.hover_start_time >= self.required_hover_time and not self.task_completed:
-                self.task_completed = True
-                self.completion_time = timestamp
-                print(f"✅ Task completed! Completion time: {self.completion_time:.2f}s")
-        else:
-            if self.hover_start_time is not None:
-                print(f"⚠️  Left target area (error: {position_error:.3f}m)")
-            self.hover_start_time = None
-        
-        # Check for safety events
-        if position_error > 2.0:  # Large deviation
-            self.current_episode['safety_events'].append({
-                'type': 'large_deviation',
-                'timestamp': timestamp,
-                'error': position_error
-            })
-        
-        if np.any(np.abs(attitude) > np.pi/3):  # Large attitude angle
-            self.current_episode['safety_events'].append({
-                'type': 'attitude_violation',
-                'timestamp': timestamp,
-                'attitude': attitude.copy()
-            })
+        # Extract position for performance evaluation
+        # Logger stores states as: [pos_x, pos_y, pos_z, vel_x, vel_y, vel_z, roll, pitch, yaw, ang_vel_x, ang_vel_y, ang_vel_z, rpm0, rpm1, rpm2, rpm3]
+        current_counter = int(self.counters[drone]) - 1  # Get the counter that was just logged
+        if current_counter >= 0:
+            # Extract position from logged state
+            position = self.states[drone, 0:3, current_counter]
+            velocity = self.states[drone, 3:6, current_counter] 
+            attitude = self.states[drone, 6:9, current_counter]
+            
+            # Calculate position error
+            position_error = np.linalg.norm(position - self.target_position)
+            
+            # Store the last recorded position and error for each episode
+            self.last_recorded_position = position.copy()
+            self.last_recorded_error = position_error
+            
+            # Debug logging removed for production
+            
+            # Track task completion (sustained hover at target)
+            if position_error <= self.target_tolerance:
+                if self.hover_start_time is None:
+                    self.hover_start_time = timestamp
+                    print(f"Started hovering at target (error: {position_error:.3f}m)")
+                elif timestamp - self.hover_start_time >= self.required_hover_time and not self.task_completed:
+                    self.task_completed = True
+                    self.completion_time = timestamp
+                    print(f"Task completed! Completion time: {self.completion_time:.2f}s")
+            else:
+                if self.hover_start_time is not None:
+                    print(f"⚠️  Left target area (error: {position_error:.3f}m)")
+                self.hover_start_time = None
+            
+            # Check for safety events
+            safety_events = []
+            if position_error > 2.0:  # Large deviation
+                safety_events.append({
+                    'type': 'large_deviation',
+                    'timestamp': timestamp,
+                    'error': position_error
+                })
+            
+            if np.any(np.abs(attitude) > np.pi/3):  # Large attitude angle
+                safety_events.append({
+                    'type': 'attitude_violation', 
+                    'timestamp': timestamp,
+                    'attitude': attitude.copy()
+                })
+            
+            # Store safety events for this step (will be aggregated in end_episode)
+            if not hasattr(self, 'current_safety_events'):
+                self.current_safety_events = []
+            self.current_safety_events.extend(safety_events)
     
-    def end_episode(self) -> None:
-        """End current episode and compute metrics."""
-        if not hasattr(self, 'current_episode'):
+    def end_episode(self, drone_id: int = 0) -> None:
+        """End current episode and compute metrics using Logger data."""
+        if not hasattr(self, 'episode_start_time') or self.episode_start_time is None:
+            print("⚠️  No episode started, cannot end episode")
             return
         
         episode_duration = time.time() - self.episode_start_time
+        current_counter = int(self.counters[drone_id])
+        episode_length = current_counter - self.episode_start_counter
         
-        # Compute episode metrics
-        positions = np.array(self.current_episode['positions'])
-        velocities = np.array(self.current_episode['velocities'])
-        attitudes = np.array(self.current_episode['attitudes'])
-        controls = np.array(self.current_episode['controls'])
-        errors = np.array(self.current_episode['errors'])
-        timestamps = np.array(self.current_episode['timestamps'])
+        print(f"Ending episode {self.current_episode_idx} (duration: {episode_duration:.2f}s, {episode_length} steps)")
+        
+        if episode_length <= 0:
+            print("⚠️  No data logged for this episode")
+            return
+            
+        # Extract data from Logger's data structure for this episode ONLY
+        # Make sure we don't include any data from the next episode
+        start_idx = self.episode_start_counter
+        end_idx = current_counter  # This should be exclusive (current_counter points to next available slot)
+        
+        # Double-check that we have valid data range
+        if end_idx <= start_idx:
+            print("⚠️  Invalid data range for episode")
+            return
+        
+        # Get episode data from Logger arrays
+        timestamps = self.timestamps[drone_id, start_idx:end_idx]
+        states = self.states[drone_id, :, start_idx:end_idx]  # Shape: (16, episode_length)
+        controls = self.controls[drone_id, :, start_idx:end_idx] # Shape: (12, episode_length)
+        
+        # Extract positions, velocities, attitudes from states
+        # Logger state order: [pos_x, pos_y, pos_z, vel_x, vel_y, vel_z, roll, pitch, yaw, ang_vel_x, ang_vel_y, ang_vel_z, rpm0, rpm1, rpm2, rpm3]
+        positions = states[0:3, :].T  # Shape: (episode_length, 3)
+        velocities = states[3:6, :].T  # Shape: (episode_length, 3)
+        attitudes = states[6:9, :].T   # Shape: (episode_length, 3)
+        rpms = states[12:16, :].T      # Shape: (episode_length, 4)
+        
+        # Debug logging removed for production
+        
+        # Calculate position errors
+        errors = np.array([np.linalg.norm(pos - self.target_position) for pos in positions])
         
         # High Priority Metrics
         self.metrics.position_errors.extend(errors.tolist())
         
-        # Task completion metrics (per episode)
+        # Task completion metrics
         if self.task_completed:
-            # Task completed successfully
             completion_rate = 1.0
             completion_time = self.completion_time
-            print(f"✅ Episode completed successfully in {completion_time:.2f}s")
+            print(f"Episode completed successfully in {completion_time:.2f}s")
         else:
-            # Task not completed
             completion_rate = 0.0
-            completion_time = episode_duration  # Use full episode duration as penalty
+            completion_time = episode_duration
             print(f"❌ Episode failed to complete task (duration: {episode_duration:.2f}s)")
         
-        # Store individual episode completion data
+        # Store episode completion data
         if not hasattr(self.metrics, 'episode_completion_rates'):
             self.metrics.episode_completion_rates = []
         if not hasattr(self.metrics, 'episode_completion_times'):
@@ -280,52 +348,49 @@ class DronePerformanceLogger:
         self.metrics.episode_completion_rates.append(completion_rate)
         self.metrics.episode_completion_times.append(completion_time)
         
-        # Update overall completion rate (average across all episodes)
+        # Update overall completion rate
         self.metrics.task_completion_rate = np.mean(self.metrics.episode_completion_rates)
         self.metrics.task_completion_time = np.mean(self.metrics.episode_completion_times)
         
-        # Control energy
-        if len(controls) > 0:
-            control_energy = np.sum(np.linalg.norm(controls, axis=1))
+        # Control energy (using RPM data)
+        if len(rpms) > 0:
+            # Calculate control energy as sum of squared RPM values
+            control_energy = np.sum(np.sum(rpms**2, axis=1))
             self.metrics.control_energy.append(control_energy)
         
         # Safety events
-        self.metrics.safety_events.extend(self.current_episode['safety_events'])
+        if hasattr(self, 'current_safety_events'):
+            self.metrics.safety_events.extend(self.current_safety_events)
+            safety_events_count = len(self.current_safety_events)
+            self.current_safety_events = []  # Reset for next episode
+        else:
+            safety_events_count = 0
         
-        # Medium Priority Metrics
+        # Attitude stability (standard deviation of attitude angles)
         if len(attitudes) > 0:
-            # Attitude stability (standard deviation of attitude changes)
-            attitude_changes = np.diff(attitudes, axis=0)
-            attitude_stability = np.mean(np.std(attitude_changes, axis=0))
+            attitude_stability = 1.0 / (1.0 + np.mean(np.std(attitudes, axis=0)))
             self.metrics.attitude_stability.append(attitude_stability)
         
-        # Response time (time to reach within target tolerance for the first time)
+        # Response time (time to reach within target tolerance for first time)
         first_within_tolerance = errors <= self.target_tolerance
         if np.any(first_within_tolerance):
-            response_time = timestamps[np.where(first_within_tolerance)[0][0]]
+            first_success_idx = np.where(first_within_tolerance)[0][0]
+            response_time = timestamps[first_success_idx] - timestamps[0] if len(timestamps) > first_success_idx else 0
             self.metrics.response_times.append(response_time)
-            print(f"⏱️  Response time: {response_time:.2f}s")
         else:
-            print(f"⚠️  Never reached target tolerance ({self.target_tolerance}m)")
+            self.metrics.response_times.append(episode_duration)  # Use full duration if never reached
         
-        # Additional response time: time to reach within 10% of target distance
-        initial_distance = np.linalg.norm(self.target_position)
-        threshold_10_percent = 0.1 * initial_distance
-        within_10_percent = errors <= threshold_10_percent
-        if np.any(within_10_percent):
-            response_time_10 = timestamps[np.where(within_10_percent)[0][0]]
-            if not hasattr(self.metrics, 'response_times_10_percent'):
-                self.metrics.response_times_10_percent = []
-            self.metrics.response_times_10_percent.append(response_time_10)
-        
-        # Frequency characteristics (simplified - dominant frequency of position error)
+        # Frequency characteristics (dominant frequency of position error)
         if len(errors) > 10:
-            fft_errors = np.fft.fft(errors)
-            freqs = np.fft.fftfreq(len(errors), 1/self.logging_freq)
-            dominant_freq = freqs[np.argmax(np.abs(fft_errors[1:len(fft_errors)//2])) + 1]
-            if 'position_error' not in self.metrics.frequency_characteristics:
-                self.metrics.frequency_characteristics['position_error'] = []
-            self.metrics.frequency_characteristics['position_error'].append(abs(dominant_freq))
+            try:
+                fft_errors = np.fft.fft(errors)
+                freqs = np.fft.fftfreq(len(errors), 1/self.LOGGING_FREQ_HZ)
+                dominant_freq = freqs[np.argmax(np.abs(fft_errors[1:len(fft_errors)//2])) + 1]
+                if 'position_error' not in self.metrics.frequency_characteristics:
+                    self.metrics.frequency_characteristics['position_error'] = []
+                self.metrics.frequency_characteristics['position_error'].append(abs(dominant_freq))
+            except:
+                pass  # Skip if FFT fails
         
         # Robustness score (inverse of error variance)
         if len(errors) > 1:
@@ -334,47 +399,61 @@ class DronePerformanceLogger:
             self.metrics.robustness_scores.append(robustness_score)
         
         # Store episode data
-        self.episode_data.append({
+        # Use the last recorded position to avoid contamination from env reset
+        actual_final_position = self.last_recorded_position.tolist() if self.last_recorded_position is not None else (positions[-1].tolist() if len(positions) > 0 else [0, 0, 0])
+        actual_final_error = self.last_recorded_error if self.last_recorded_error is not None else (errors[-1] if len(errors) > 0 else float('inf'))
+        
+        episode_summary = {
+            'episode_id': self.current_episode_idx,
             'duration': episode_duration,
+            'step_count': episode_length,
             'positions': positions.tolist(),
+            'velocities': velocities.tolist(),
+            'attitudes': attitudes.tolist(),
+            'controls': rpms.tolist(),  # Store RPM as controls for visualization
             'errors': errors.tolist(),
-            'controls': controls.tolist(),
+            'timestamps': timestamps.tolist(),
             'task_completed': self.task_completed,
             'completion_time': completion_time,
             'completion_rate': completion_rate,
-            'safety_events_count': len(self.current_episode['safety_events']),
+            'safety_events_count': safety_events_count,
             'target_position': self.target_position.tolist(),
-            'final_position': positions[-1].tolist() if len(positions) > 0 else [0, 0, 0],
-            'final_error': errors[-1] if len(errors) > 0 else float('inf')
-        })
+            'final_position': actual_final_position,
+            'final_error': actual_final_error,
+            'mean_error': np.mean(errors) if len(errors) > 0 else float('inf'),
+            'max_error': np.max(errors) if len(errors) > 0 else float('inf'),
+            'control_energy': np.sum(np.sum(rpms**2, axis=1)) if len(rpms) > 0 else 0,
+        }
+        
+        self.episode_data.append(episode_summary)
         
         # Compute additional metrics
         self._compute_additional_metrics()
         
+        print(f"   Final error: {episode_summary['final_error']:.3f}m")
+        print(f"   Mean error: {episode_summary['mean_error']:.3f}m")
+        print(f"   Control energy: {episode_summary['control_energy']:.2f}")
+        print(f"   Safety events: {safety_events_count}")
+
     def _compute_additional_metrics(self) -> None:
         """Compute additional derived metrics."""
         if len(self.metrics.position_errors) > 0:
-            self.metrics.rmse_position = np.sqrt(np.mean(np.square(self.metrics.position_errors)))
+            self.metrics.rmse_position = np.sqrt(np.mean(np.array(self.metrics.position_errors)**2))
             self.metrics.max_position_error = np.max(self.metrics.position_errors)
-            
-            # Steady state error (error in last 20% of episode)
-            last_20_percent = int(0.8 * len(self.metrics.position_errors))
-            if last_20_percent < len(self.metrics.position_errors):
-                self.metrics.steady_state_error = np.mean(self.metrics.position_errors[last_20_percent:])
+            self.metrics.steady_state_error = np.mean(self.metrics.position_errors[-10:]) if len(self.metrics.position_errors) >= 10 else np.mean(self.metrics.position_errors)
         
-        # Settling time (time to stay within 2% of target)
-        # Simplified implementation - could be improved
+        # Settling time (simplified implementation)
         if len(self.metrics.response_times) > 0:
             self.metrics.settling_time = np.mean(self.metrics.response_times)
         
         # Control smoothness
         if len(self.metrics.control_energy) > 0:
-            control_variations = np.diff(self.metrics.control_energy)
-            if len(control_variations) > 0:
-                self.metrics.control_smoothness = 1.0 / (1.0 + np.std(control_variations))
+            energy_values = np.array(self.metrics.control_energy)
+            if len(energy_values) > 1:
+                self.metrics.control_smoothness = 1.0 / (1.0 + np.std(energy_values))
     
     def evaluate_model(self, model_path: str, num_episodes: int = 10, 
-                      model_name: str = None, duration_sec: int = None) -> Dict:
+                      model_name: str = None, duration_sec: int = None, gui_enabled: bool = False) -> Dict:
         """
         Evaluate a model and collect performance metrics.
         
@@ -383,11 +462,12 @@ class DronePerformanceLogger:
             num_episodes: Number of episodes to evaluate
             model_name: Name of the model for reporting
             duration_sec: Episode duration in seconds (default: 180 for proper evaluation)
+            gui_enabled: Whether to enable GUI visualization during evaluation
             
         Returns:
             Dictionary containing evaluation results
         """
-        print(f"🔍 Evaluating model: {model_name or model_path}")
+        print(f"Evaluating model: {model_name or model_path}")
         print(f"   Episodes: {num_episodes}")
         
         # Use longer duration for proper evaluation (same as GUI mode)
@@ -406,7 +486,7 @@ class DronePerformanceLogger:
         from .config import EnvironmentConfig, TrainingConfig
         
         try:
-            # 🔧 Fix model path handling - ensure correct absolute path
+            # Fix model path handling - ensure correct absolute path
             # Check if the path is already absolute
             if not os.path.isabs(model_path):
                 # If relative path, make it relative to the current working directory
@@ -419,34 +499,22 @@ class DronePerformanceLogger:
                 alt_path = os.path.join(os.getcwd(), 'results', 'unified', 'best_model.zip')
                 if os.path.exists(alt_path):
                     model_path = alt_path
-                    print(f"🔧 Found model at alternative path: {model_path}")
                 else:
                     raise FileNotFoundError(f"Model file not found at {model_path} or {alt_path}")
-            
-            print(f"🔧 Using model path: {model_path}")
             
             # Find normalization stats path
             stats_path = os.path.join(os.path.dirname(model_path), "vec_normalize.pkl")
             if not os.path.exists(stats_path):
-                print(f"⚠️  VecNormalize stats not found at {stats_path}")
-                print("   This may cause performance issues!")
                 env_has_normalization = False
             else:
-                print(f"✅ Found VecNormalize stats at {stats_path}")
                 env_has_normalization = True
             
             # Load model
             model = PPO.load(model_path)
             
-            # Create environment with same settings as GUI evaluation
-            env_config = EnvironmentConfig(gui=False, duration_sec=eval_duration)
+            # Create environment with GUI support
+            env_config = EnvironmentConfig(gui=gui_enabled, duration_sec=eval_duration)
             training_config = TrainingConfig(task='unified', enable_obstacles=True)
-            
-            print(f"🔧 Environment Configuration:")
-            print(f"   GUI: {env_config.gui}")
-            print(f"   Duration: {env_config.duration_sec}s")
-            print(f"   Obstacles: {training_config.enable_obstacles}")
-            print(f"   VecNormalize: {env_has_normalization}")
             
             # Create environment kwargs (exactly like trainer.py load_test_model)
             env_kwargs = EnvironmentFactory.get_env_kwargs(
@@ -460,27 +528,19 @@ class DronePerformanceLogger:
                 'randomize_init': True
             })
             
-            # Debug: Print environment parameters
-            print(f"🔍 Environment kwargs: {list(env_kwargs.keys())}")
-            
             if env_has_normalization:
                 # Create vectorized environment and apply normalization (exactly like trainer.py)
                 env_raw = make_vec_env(
-                    lambda: EnvironmentFactory.create_environment(
+                    lambda: ActionReshapeWrapper(EnvironmentFactory.create_environment(
                         training_config.task, 
                         training_config.trajectory_type,
                         **env_kwargs
-                    ),
+                    )),
                     n_envs=1
                 )
                 env = VecNormalize.load(stats_path, env_raw)
                 env.training = False
                 env.norm_reward = False
-                print("✅ VecNormalize applied successfully!")
-                print(f"   training: {env.training}, norm_reward: {env.norm_reward}, norm_obs: {env.norm_obs}")
-                print(f"   obs_rms count: {env.obs_rms.count}, ret_rms count: {env.ret_rms.count}")
-                print(f"   obs_rms mean: {env.obs_rms.mean[:5] if hasattr(env.obs_rms, 'mean') else 'N/A'}")
-                print(f"   obs_rms var: {env.obs_rms.var[:5] if hasattr(env.obs_rms, 'var') else 'N/A'}")
             else:
                 # Create raw environment without normalization
                 env = EnvironmentFactory.create_environment(
@@ -488,52 +548,79 @@ class DronePerformanceLogger:
                     training_config.trajectory_type,
                     **env_kwargs
                 )
-                print("⚠️  Using raw environment without normalization")
             
             # Calculate maximum steps based on duration (30 Hz control frequency)
             max_steps = eval_duration * 30  # 30 Hz control frequency
-            print(f"   Maximum steps per episode: {max_steps}")
             
             # Run evaluation episodes
             for episode in range(num_episodes):
-                print(f"   Episode {episode + 1}/{num_episodes}")
                 
-                self.start_episode()
+                # Start episode tracking BEFORE environment reset
+                self.start_episode(drone_id=0)  # Start episode for drone 0
                 
                 # Handle different environment types (vectorized vs raw)
                 if env_has_normalization:
                     obs = env.reset()
                     # VecEnv returns obs as (n_envs, obs_dim) array
                     if isinstance(obs, np.ndarray) and len(obs.shape) > 1:
-                        obs = obs[0]  # Take first (and only) environment
+                        obs = obs[0]  # Get first environment's observation
+                    
+                    # Get initial info to update target position immediately
+                    # For VecEnv, we need to step once to get info
+                    action, _ = model.predict(obs, deterministic=True)
+                    
+                    obs, reward, done, info = env.step(action)
+                    obs = obs[0] if isinstance(obs, np.ndarray) and len(obs.shape) > 1 else obs
+                    info = info[0] if isinstance(info, list) and len(info) > 0 else info
+                    done = done[0] if isinstance(done, np.ndarray) else done
+                    
+                    # Update target position from first step info
+                    self.update_target_position(info)
+                    
+                    step_count = 1  # We've already taken one step
                 else:
-                    result = env.reset()
+                    obs = env.reset()
+                    result = obs
                     # Handle potential tuple return from env.reset()
                     if isinstance(result, tuple):
                         obs, info = result
+                        # Update target position from reset info
+                        self.update_target_position(info)
                     else:
                         obs = result
+                        # Get info from first step for raw environment
+                        action, _ = model.predict(obs, deterministic=True)
+                        # For raw environment, ensure action is 1D for single drone
+                        if action.ndim > 1:
+                            action = action[0]  # Take first drone's action (convert from (1,4) to (4,))
+                        obs, reward, terminated, truncated, info = env.step(action)
+                        # Update target position from first step info
+                        self.update_target_position(info)
+                        done = terminated or truncated
+                        step_count = 1  # We've already taken one step
+                        if done:
+                            print(f"⚠️  Episode ended immediately after reset/first step")
+                            continue
                 
-                done = False
-                step_count = 0
+                if 'step_count' not in locals():
+                    step_count = 0
+                    done = False
                 
                 while not done and step_count < max_steps:
                     action, _ = model.predict(obs, deterministic=True)
                     
-                    # 🔧 Ensure action has correct shape for single drone (1, 4)
-                    if action.ndim == 1:
-                        action = action.reshape(1, -1)  # Convert (4,) to (1, 4)
-                    
                     # Handle different environment types
                     if env_has_normalization:
-                        # VecEnv returns arrays
-                        new_obs, reward, done, info = env.step([action])
+                        # VecEnv - use action directly as in trainer.py
+                        new_obs, reward, done, info = env.step(action)
                         new_obs = new_obs[0]  # Take first environment
                         reward = reward[0]    # Take first environment
                         done = done[0]       # Take first environment
                         info = info[0]       # Take first environment
                     else:
-                        # Raw environment - ensure action shape is correct for single drone
+                        # Raw environment - action should be 1D for single drone 
+                        if action.ndim > 1:
+                            action = action[0]  # Take first drone's action (convert from (1,4) to (4,))
                         result = env.step(action)
                         # Handle different return formats from env.step()
                         if len(result) == 4:
@@ -544,28 +631,135 @@ class DronePerformanceLogger:
                         else:
                             raise ValueError(f"Unexpected return format from env.step(): {len(result)} values")
                     
-                    # Debug: Print why episode ended early
-                    if done and step_count < 100:  # If episode ends very early
-                        print(f"⚠️  Episode ended early at step {step_count}")
-                        if env_has_normalization:
-                            print(f"   Done: {done}")
-                        else:
-                            print(f"   Terminated: {terminated}, Truncated: {truncated}")
-                        if 'current_pos' in info:
-                            print(f"   Final position: {info['current_pos']}")
-                        if 'target_pos' in info:
-                            print(f"   Target position: {info['target_pos']}")
-                            distance = np.linalg.norm(info['current_pos'] - info['target_pos']) if 'current_pos' in info else 'unknown'
-                            print(f"   Distance to target: {distance}")
+                    # Prepare state array for Logger (20 elements as expected)
+                    # Convert observation to full state format expected by Logger
+                    timestamp = step_count / self.LOGGING_FREQ_HZ
                     
-                    # Log step data
-                    timestamp = step_count / self.logging_freq
-                    self.log_step(obs, action, reward, info, timestamp)
+                    # Extract current drone state from environment info or obs
+                    if 'current_state' in info and len(info['current_state']) >= 20:
+                        # Use full state from environment if available
+                        state = np.array(info['current_state'][:20])
+                    else:
+                        # Construct state from available observation and info
+                        state = np.zeros(20)
+                        if len(obs) >= 3:  # Position
+                            state[0:3] = obs[0:3]
+                        if len(obs) >= 6:  # Velocity  
+                            state[10:13] = obs[3:6]
+                        if len(obs) >= 9:  # Attitude
+                            state[7:10] = obs[6:9]
+                        if len(obs) >= 12:  # Angular velocity
+                            state[13:16] = obs[9:12]
+                        
+                        # Add RPM from action (scaled to realistic values)
+                        if action.size >= 4:
+                            action_flat = action.flatten()
+                            # Scale normalized action [-1,1] to realistic RPM range [0, 20000]
+                            rpm_values = (action_flat + 1) * 10000  # Map [-1,1] to [0, 20000]
+                            state[16:20] = rpm_values[:4]
+                    
+                    # Get actual drone state vector (20 elements) from the environment
+                    # For VecEnv, we need to access the underlying environment correctly
+                    if env_has_normalization:
+                        try:
+                            # Try different access paths to get the underlying DRLAviary instance
+                            underlying_env = None
+                            
+                            # Method 1: Through ActionReshapeWrapper
+                            if hasattr(env, 'envs') and hasattr(env.envs[0], 'env'):
+                                wrapper_env = env.envs[0].env
+                                if hasattr(wrapper_env, 'env'):  # ActionReshapeWrapper.env
+                                    underlying_env = wrapper_env.env
+                                elif hasattr(wrapper_env, '_getDroneStateVector'):
+                                    underlying_env = wrapper_env
+                            
+                            # Method 2: Direct access if Method 1 failed
+                            if underlying_env is None and hasattr(env, 'envs'):
+                                if hasattr(env.envs[0], '_getDroneStateVector'):
+                                    underlying_env = env.envs[0]
+                            
+                            if underlying_env and hasattr(underlying_env, '_getDroneStateVector'):
+                                # Success! Get raw state vector (20 elements) - true physical state
+                                state = underlying_env._getDroneStateVector(0)
+                                timestamp = step_count / underlying_env.CTRL_FREQ
+                                
+                                # Debug: Print position comparison every 30 steps
+                                if step_count % 30 == 0:  
+                                    true_pos = state[0:3]
+                                    # Denormalize observations to get physical coordinates
+                                    if hasattr(env, 'unnormalize_obs'):
+                                        try:
+                                            denorm_obs = env.unnormalize_obs(new_obs)
+                                            obs_pos = denorm_obs[:3] if len(denorm_obs) >= 3 else np.array([0, 0, 0])
+                                        except:
+                                            obs_pos = new_obs[:3] if len(new_obs) >= 3 else np.array([0, 0, 0])
+                                    else:
+                                        obs_pos = new_obs[:3] if len(new_obs) >= 3 else np.array([0, 0, 0])
+                            else:
+                                # Fallback: use observation data
+                                state = np.zeros(20)
+                                if hasattr(env, 'unnormalize_obs'):
+                                    try:
+                                        denorm_obs = env.unnormalize_obs(new_obs)
+                                        state[0:3] = denorm_obs[:3] if len(denorm_obs) >= 3 else np.array([0, 0, 0])
+                                    except:
+                                        state[0:3] = new_obs[:3] if len(new_obs) >= 3 else np.array([0, 0, 0])
+                                else:
+                                    state[0:3] = new_obs[:3] if len(new_obs) >= 3 else np.array([0, 0, 0])
+                                timestamp = step_count * 0.033
+                                
+                        except Exception as e:
+                            print(f"⚠️  Exception accessing state vector: {e}")
+                            state = np.zeros(20)
+                            state[0:3] = new_obs[:3] if len(new_obs) >= 3 else np.array([0, 0, 0])
+                            timestamp = step_count * 0.033
+                    else:
+                        # For raw environment (non-normalized)
+                        if hasattr(env, '_getDroneStateVector'):
+                            state = env._getDroneStateVector(0)
+                            timestamp = step_count / env.CTRL_FREQ
+                        else:
+                            # Fallback: construct state from observations
+                            state = np.zeros(20)
+                            state[0:3] = new_obs[:3] if len(new_obs) >= 3 else np.array([0, 0, 0])
+                            timestamp = step_count * 0.033
+                    
+                    # Prepare control array (12 elements)
+                    control = np.zeros(12)
+                    
+                    # Check if state is corrupted BEFORE logging
+                    if (state[0] == 0.0 and state[1] == 0.0 and state[2] == 1.0):
+                        break  # Stop immediately when we detect reset state
+                        
+                    # Save state BEFORE calling Logger methods to avoid corruption
+                    # Store the true final state before any Logger operations
+                    true_final_position = state[0:3].copy() if len(state) >= 3 else np.array([0, 0, 0])
+                    true_final_error = np.linalg.norm(true_final_position - self.target_position)
+                    
+                    # Use enhanced logging method
+                    self.log_step_with_performance(
+                        drone=0, 
+                        timestamp=timestamp, 
+                        state=state,
+                        action=action.flatten(), 
+                        reward=reward, 
+                        info=info,
+                        control=control
+                    )
+                    
+                    # Store the clean position data
+                    self.last_recorded_position = true_final_position.copy()
+                    self.last_recorded_error = true_final_error
                     
                     obs = new_obs
                     step_count += 1
+                    
+                    # Check if this will be the last step of the episode
+                    if done or step_count >= max_steps:
+                        break  # Exit the loop immediately to preserve state
                 
-                self.end_episode()
+                # End episode immediately when done, before any reset operations
+                self.end_episode(drone_id=0)  # End episode for drone 0
                 
             env.close()
             
@@ -583,7 +777,7 @@ class DronePerformanceLogger:
             with open(results_file, 'w') as f:
                 json.dump(results, f, indent=2, cls=NumpyEncoder)
             
-            print(f"✅ Evaluation completed. Results saved to: {results_file}")
+            print(f"Evaluation completed. Results saved to: {results_file}")
             return results
             
         except Exception as e:
@@ -630,7 +824,7 @@ class DronePerformanceLogger:
                 f.write(f"  - Std: {np.std(self.metrics.position_errors):.4f} m\n")
                 f.write(f"  - 95th Percentile: {np.percentile(self.metrics.position_errors, 95):.4f} m\n")
         
-        print(f"📋 Performance report generated: {report_file}")
+        print(f"Performance report generated: {report_file}")
         return report_file
     
     def visualize_performance(self, save_plots: bool = True) -> None:
@@ -640,11 +834,11 @@ class DronePerformanceLogger:
         Args:
             save_plots: Whether to save plots to files
         """
-        print("📈 Generating performance visualizations...")
+        print("Generating performance visualizations...")
         
         # Create figure with subplots
-        fig = plt.figure(figsize=(20, 16))
-        gs = GridSpec(4, 3, hspace=0.3, wspace=0.3)
+        fig = plt.figure(figsize=(20, 12))
+        gs = GridSpec(3, 3, hspace=0.3, wspace=0.3)
         
         # 1. Position Error Time Series
         ax1 = fig.add_subplot(gs[0, 0])
@@ -804,53 +998,12 @@ class DronePerformanceLogger:
         ax9.set_title('Performance Summary', fontsize=12, fontweight='bold', y=1.08)
         ax9.grid(True)
         
-        # 10. 3D Trajectory Plot (if episode data available)
-        if self.episode_data and len(self.episode_data) > 0:
-            ax10 = fig.add_subplot(gs[3, :], projection='3d')
-            
-            # Define colors for different episodes
-            colors = ['blue', 'green', 'orange', 'purple', 'brown', 'pink']
-            alphas = [0.8, 0.7, 0.7, 0.6, 0.6, 0.5]  # Gradually decrease alpha for later episodes
-            
-            # Plot trajectories from first 6 episodes (or all available if less than 6)
-            num_episodes_to_plot = min(6, len(self.episode_data))
-            
-            for episode_idx in range(num_episodes_to_plot):
-                positions = np.array(self.episode_data[episode_idx]['positions'])
-                if len(positions) > 0:
-                    color = colors[episode_idx % len(colors)]
-                    alpha = alphas[episode_idx % len(alphas)]
-                    
-                    # Plot trajectory
-                    ax10.plot(positions[:, 0], positions[:, 1], positions[:, 2], 
-                             color=color, alpha=alpha, linewidth=2, 
-                             label=f'Episode {episode_idx + 1}')
-                    
-                    # Plot start position for each episode
-                    ax10.scatter([positions[0, 0]], [positions[0, 1]], [positions[0, 2]], 
-                               c=color, s=40, marker='o', alpha=alpha)
-                    
-                    # Plot end position for each episode
-                    ax10.scatter([positions[-1, 0]], [positions[-1, 1]], [positions[-1, 2]], 
-                               c=color, s=40, marker='s', alpha=alpha)
-            
-            # Plot target position (only once)
-            ax10.scatter([self.target_position[0]], [self.target_position[1]], [self.target_position[2]], 
-                       c='red', s=150, marker='*', label='Target', edgecolors='black', linewidth=1)
-            
-            ax10.set_xlabel('X (m)')
-            ax10.set_ylabel('Y (m)')
-            ax10.set_zlabel('Z (m)')
-            ax10.set_title(f'3D Flight Trajectories (First {num_episodes_to_plot} Episodes)', 
-                          fontsize=12, fontweight='bold')
-            ax10.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        
         plt.suptitle('Comprehensive Drone Performance Analysis', fontsize=16, fontweight='bold')
         
         if save_plots:
             plot_file = os.path.join(self.performance_dir, "performance_analysis.png")
             plt.savefig(plot_file, dpi=300, bbox_inches='tight')
-            print(f"📊 Performance plots saved to: {plot_file}")
+            print(f"Performance plots saved to: {plot_file}")
             
             # Generate individual trajectory plots
             self._generate_individual_trajectory_plots()
@@ -862,7 +1015,7 @@ class DronePerformanceLogger:
         Generate a single figure with 6 subplot panels showing individual 3D trajectory plots for each episode.
         """
         if not self.episode_data or len(self.episode_data) == 0:
-            print("⚠️  No episode data available for individual trajectory plots")
+            print("No episode data available for individual trajectory plots")
             return
         
         # Define colors for different episodes
@@ -871,7 +1024,7 @@ class DronePerformanceLogger:
         # Generate plots for first 6 episodes (or all available if less than 6)
         num_episodes_to_plot = min(6, len(self.episode_data))
         
-        print(f"📈 Generating combined trajectory plots for {num_episodes_to_plot} episodes...")
+        print(f"Generating combined trajectory plots for {num_episodes_to_plot} episodes...")
         
         # Create a figure with 2 rows and 3 columns of subplots
         fig = plt.figure(figsize=(18, 12))
@@ -930,11 +1083,6 @@ class DronePerformanceLogger:
                       c='green', s=60, marker='o', label='Start', 
                       edgecolors='black', linewidth=1)
             
-            # Plot end position
-            ax.scatter([positions[-1, 0]], [positions[-1, 1]], [positions[-1, 2]], 
-                      c='orange', s=60, marker='s', label='End',
-                      edgecolors='black', linewidth=1)
-            
             # Plot target position (specific to this episode)
             ax.scatter([target_pos[0]], [target_pos[1]], [target_pos[2]], 
                       c='red', s=100, marker='*', label='Target', 
@@ -974,7 +1122,7 @@ class DronePerformanceLogger:
         # Save the combined plot
         trajectory_file = os.path.join(self.performance_dir, "trajectories_combined.png")
         plt.savefig(trajectory_file, dpi=300, bbox_inches='tight')
-        print(f"📊 Combined trajectory plots saved to: {trajectory_file}")
+        print(f"Combined trajectory plots saved to: {trajectory_file}")
         
         # Close the figure to free memory
         plt.close(fig)
@@ -1026,8 +1174,85 @@ class DronePerformanceLogger:
             f.write("\\end{tabular}\n")
             f.write("\\end{table}\n")
         
-        print(f"📄 LaTeX table generated: {latex_file}")
+        print(f"LaTeX table generated: {latex_file}")
         return latex_file
+    
+    def save_performance_data(self, comment: str = "performance_eval") -> None:
+        """
+        Save performance data using Logger's save methods plus additional analysis data.
+        
+        Args:
+            comment: Comment to add to saved files
+        """
+        print("Saving performance data...")
+        
+        # Use Logger's built-in save methods
+        self.save()  # Save as .npy format
+        self.save_as_csv(comment)  # Save as CSV files
+        
+        # Save additional performance metrics as JSON
+        performance_file = os.path.join(self.performance_dir, f"performance_metrics_{comment}.json")
+        with open(performance_file, 'w') as f:
+            json.dump(self.metrics.to_dict(), f, indent=2, cls=NumpyEncoder)
+        
+        # Save episode data
+        episodes_file = os.path.join(self.performance_dir, f"episode_data_{comment}.json")
+        with open(episodes_file, 'w') as f:
+            json.dump(self.episode_data, f, indent=2, cls=NumpyEncoder)
+            
+        print(f"Performance data saved:")
+        print(f"   Logger data: {self.OUTPUT_FOLDER}")
+        print(f"   Performance metrics: {performance_file}")
+        print(f"   Episode data: {episodes_file}")
+    
+    def plot_performance_vs_logger(self, save_plots: bool = True) -> None:
+        """
+        Generate performance plots using Logger's plot method plus additional analysis.
+        
+        Args:
+            save_plots: Whether to save plots to files
+        """
+        print("Generating Logger-style plots plus performance analysis...")
+        
+        # Use Logger's built-in plot method
+        self.plot(pwm=False)
+        
+        # Generate additional performance visualizations
+        self.visualize_performance(save_plots)
+        
+        # Generate individual trajectory plots
+        self._generate_individual_trajectory_plots()
+        
+        print("All plots generated successfully!")
+    
+    def get_logger_summary(self) -> Dict:
+        """
+        Get a summary of the Logger data for inspection.
+        
+        Returns:
+            Dictionary with Logger data summary
+        """
+        summary = {
+            'num_drones': self.NUM_DRONES,
+            'logging_freq': self.LOGGING_FREQ_HZ,
+            'total_episodes': self.current_episode_idx,
+            'data_shape': {
+                'timestamps': self.timestamps.shape,
+                'states': self.states.shape,
+                'controls': self.controls.shape
+            },
+            'counters': self.counters.tolist(),
+            'state_labels': [
+                'pos_x', 'pos_y', 'pos_z', 'vel_x', 'vel_y', 'vel_z',
+                'roll', 'pitch', 'yaw', 'ang_vel_x', 'ang_vel_y', 'ang_vel_z',
+                'rpm0', 'rpm1', 'rpm2', 'rpm3'
+            ],
+            'control_labels': [
+                'pos_x_cmd', 'pos_y_cmd', 'pos_z_cmd', 'vel_x_cmd', 'vel_y_cmd', 'vel_z_cmd',
+                'roll_cmd', 'pitch_cmd', 'yaw_cmd', 'ang_vel_x_cmd', 'ang_vel_y_cmd', 'ang_vel_z_cmd'
+            ]
+        }
+        return summary
 
 
 # Export the main class
