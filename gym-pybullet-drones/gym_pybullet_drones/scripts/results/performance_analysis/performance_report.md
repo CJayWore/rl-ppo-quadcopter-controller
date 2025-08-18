@@ -1,27 +1,27 @@
 # Drone Performance Evaluation Report
 
-Generated on: 2025-08-17 12:39:21
+Generated on: 2025-08-18 17:52:55
 
 ## High Priority Metrics
 
-- **Task Completion Rate**: 100.00%
-- **Average Task Completion Time**: 8.54 seconds
-- **Position RMSE**: 1.2377 m
-- **Maximum Position Error**: 5.4188 m
-- **Average Control Energy**: 755211735674.81
-- **Safety Events**: 407
+- **Task Completion Rate**: 72.50%
+- **Average Task Completion Time**: 6.91 seconds
+- **Position RMSE**: 1.1873 m
+- **Maximum Position Error**: 5.9812 m
+- **Average Control Energy**: 582825974087.93
+- **Safety Events**: 117770
 
 ## Medium Priority Metrics
 
-- **Average Attitude Stability**: 0.8609
-- **Average Response Time**: 5.51 seconds
-- **Average Robustness Score**: 0.4326
-- **Control Smoothness**: 0.6124
-- **Steady State Error**: 0.0040 m
+- **Average Attitude Stability**: 0.8283
+- **Average Response Time**: 4.64 seconds
+- **Average Robustness Score**: 0.5650
+- **Control Smoothness**: 0.6454
+- **Steady State Error**: 3.1966 m
 
 ## Statistical Summary
 
 - **Position Error Statistics**:
-  - Mean: 0.4468 m
-  - Std: 1.1542 m
-  - 95th Percentile: 3.7580 m
+  - Mean: 0.4785 m
+  - Std: 1.0867 m
+  - 95th Percentile: 3.4172 m

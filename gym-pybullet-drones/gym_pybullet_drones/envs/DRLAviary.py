@@ -1,3 +1,20 @@
+"""
+Deep Reinforcement Learning Environment for Drone Navigation.
+
+This module implements a comprehensive drone control environment that combines:
+- Path planning and navigation to target positions
+- Obstacle avoidance capabilities  
+- Precision hovering at target locations
+- Gaussian noise simulation for realistic training
+- Advanced camera control systems
+
+The environment supports multiple task configurations and provides detailed
+performance metrics for training evaluation.
+
+Classes:
+    DRLAviary: Main environment class for drone navigation tasks
+"""
+
 import dis
 import numpy as np
 import pybullet as p
@@ -13,18 +30,31 @@ try:
     sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts', 'rl_framework'))
     from gaussian_noise import GaussianNoiseManager, NoiseType
 except ImportError:
-    print("⚠️ Gaussian Noise functionality not available - noise parameters will be ignored")
+    print("Warning: Gaussian Noise functionality not available - noise parameters will be ignored")
     GaussianNoiseManager = None
     NoiseType = None
 
 class DRLAviary(BaseRLAviary):
     """
-    Deep RL environment: Navigate to target while avoiding obstacles and hover at destination.
+    Deep Reinforcement Learning environment for drone navigation tasks.
     
-    This environment combines three capabilities:
+    This environment combines three main capabilities:
     1. Path planning: Navigate towards a target position
-    2. Obstacle avoidance: Avoid obstacles along the path
+    2. Obstacle avoidance: Avoid obstacles along the path  
     3. Hovering: Maintain stable hovering at the target position
+    
+    The environment supports configurable difficulty through obstacle density,
+    noise simulation, and target precision requirements.
+    
+    Attributes:
+        RANDOMIZE_INIT (bool): Whether to randomize initial positions
+        NUM_OBSTACLES (int): Number of obstacles in the environment
+        OBSTACLE_RADIUS (float): Radius of obstacles
+        SENSING_RANGE (float): Maximum sensor detection range
+        TARGET_RADIUS (float): Target area radius for completion
+        HOVER_THRESHOLD (float): Distance threshold for hovering
+        EPISODE_LEN_SEC (int): Maximum episode length in seconds
+        ENABLE_OBSTACLES (bool): Whether obstacles are enabled
     """
 
     def __init__(self,
@@ -42,8 +72,8 @@ class DRLAviary(BaseRLAviary):
                  num_obstacles: int = 8,
                  obstacle_radius: float = 0.25,
                  sensing_range: float = 2.0,
-                 target_radius: float = 0.15,  # Target area radius
-                 hover_threshold: float = 0.5,  # Hover precision threshold
+                 target_radius: float = 0.15,
+                 hover_threshold: float = 0.5,
                  episode_len_sec: int = 30,
                  enable_obstacles: bool = True,
                  # Gaussian Noise parameters
@@ -51,8 +81,35 @@ class DRLAviary(BaseRLAviary):
                  noise_level: str = "medium",  # "light", "medium", "heavy"
                  noise_decay: bool = True,
                  show_noise_ui: bool = True):
+        """
+        Initialize the DRL environment with specified parameters.
         
-        # Task
+        Args:
+            drone_model: Type of drone model to simulate
+            initial_xyzs: Initial drone positions
+            initial_rpys: Initial drone orientations
+            physics: Physics engine type
+            pyb_freq: PyBullet simulation frequency
+            ctrl_freq: Control frequency
+            gui: Whether to show GUI
+            record: Whether to record simulation
+            obs: Observation space type
+            act: Action space type
+            randomize_init: Whether to randomize initial positions
+            num_obstacles: Number of obstacles in environment
+            obstacle_radius: Radius of each obstacle
+            sensing_range: Maximum sensor detection range
+            target_radius: Radius of target completion area
+            hover_threshold: Distance threshold for hovering detection
+            episode_len_sec: Maximum episode length in seconds
+            enable_obstacles: Whether to enable obstacles
+            enable_noise: Whether to enable Gaussian noise simulation
+            noise_level: Noise intensity level ("light", "medium", "heavy")
+            noise_decay: Whether noise should decay during training
+            show_noise_ui: Whether to display noise parameters in GUI
+        """
+        
+        # Task configuration
         self.RANDOMIZE_INIT = randomize_init
         self.NUM_OBSTACLES = num_obstacles
         self.OBSTACLE_RADIUS = obstacle_radius
@@ -81,7 +138,7 @@ class DRLAviary(BaseRLAviary):
         self.total_training_time = 0.0
         self.task_completion_times = []
         
-        # Visualisation
+        # Visualization
         self.target_visual_id = None
         self.connection_line_id = None
         self.path_markers = []
@@ -98,20 +155,20 @@ class DRLAviary(BaseRLAviary):
         self.noise_manager = None
         if self.enable_noise and GaussianNoiseManager is not None:
             self.noise_manager = self._setup_noise_manager()
-            print(f"🔊 Noise-enhanced environment initialized (level: {noise_level})")
+            print(f"Noise-enhanced environment initialized (level: {noise_level})")
         elif self.enable_noise and GaussianNoiseManager is None:
-            print("⚠️ Noise requested but GaussianNoiseManager not available")
+            print("Warning: Noise requested but GaussianNoiseManager not available")
         else:
-            print("🔇 Noise-free environment initialized")
+            print("Noise-free environment initialized")
 
         # Camera settings
         self.camera_follow_enabled = True
-        self.camera_mode = "chase" # "follow", "chase", "orbit", "target_center", "target_orbit"
+        self.camera_mode = "chase"  # "follow", "chase", "orbit", "target_center", "target_orbit"
         self.camera_distance = 4.0
         self.camera_height_offset = 1.5
         
-        # 🔧 添加相机平滑参数
-        self.camera_smoothing = 0.05  # 平滑系数，越小越平滑
+        # Camera smoothing parameters
+        self.camera_smoothing = 0.05  # Smoothing factor, smaller = smoother
         self.camera_update_freq = 8
         self.last_camera_pos = None
         self.last_camera_target = None
@@ -131,20 +188,20 @@ class DRLAviary(BaseRLAviary):
                          act=act)
         
         self.target_body_ids = []
-        self._setupObservationSpace()  # 设置扩展的观察空间
+        self._setupObservationSpace()  # Setup extended observation space
 
     def _setupObservationSpace(self):
-        """设置扩展的观察空间"""
-        # 获取原始观察空间的维度
+        """Setup extended observation space with additional sensor information."""
+        # Get original observation space dimensions
         original_obs_space = super()._observationSpace()
     
         if len(original_obs_space.shape) > 1:
-            # 如果是 (NUM_DRONES, obs_dim) 的形状
-            print(f"1️⃣[DRLAviary] Original obs space shape: {original_obs_space.shape}")
+            # If shape is (NUM_DRONES, obs_dim)
+            print(f"[DRLAviary] Original obs space shape: {original_obs_space.shape}")
             original_obs_dim = original_obs_space.shape[1]
         else:
-            print(f"2️⃣[DRLAviary] Original obs space shape: {original_obs_space.shape}")
-            # 如果是 (obs_dim,) 的形状
+            print(f"[DRLAviary] Modified obs space shape: {original_obs_space.shape}")
+            # If shape is (obs_dim,)
             original_obs_dim = original_obs_space.shape[0]
         
         num_lidar_rays = 12   
@@ -168,7 +225,7 @@ class DRLAviary(BaseRLAviary):
         print(f"[DRLAviary] Added: {num_lidar_rays} lidar + {target_info_world} world_target + {target_info_body} body_target + {velocity_body} body_vel + {distance_info + angle_info} dist_angle")
 
     def _setup_noise_manager(self):
-        """根据噪声级别创建噪声管理器"""
+        """Create noise manager based on specified noise level."""
         def get_training_progress():
             return min(1.0, self.total_episodes / 1000.0)
         
@@ -177,24 +234,24 @@ class DRLAviary(BaseRLAviary):
             random_seed=None
         )
         
-        # 设置UI显示（如果支持）
+        # Setup UI display if supported
         if self.show_noise_ui and self.GUI and hasattr(manager, '_setup_ui_display'):
             try:
                 manager.client_id = getattr(self, 'CLIENT', 0)
                 manager._setup_ui_display()
             except Exception as e:
-                print(f"⚠️ Could not setup noise UI: {e}")
+                print(f"Warning: Could not setup noise UI: {e}")
         
-        # 根据噪声级别调整参数
+        # Adjust parameters based on noise level
         if self.noise_level == "light":
             for noise_type in manager.noise_configs:
                 manager.noise_configs[noise_type].std_dev *= 0.5
         elif self.noise_level == "heavy":
             for noise_type in manager.noise_configs:
                 manager.noise_configs[noise_type].std_dev *= 1.5
-        # "medium"级别保持默认设置
+        # "medium" level keeps default settings
         
-        # 设置噪声衰减
+        # Configure noise decay
         if not self.noise_decay:
             for noise_type in manager.noise_configs:
                 manager.noise_configs[noise_type].decay_rate = 0.0
@@ -202,7 +259,7 @@ class DRLAviary(BaseRLAviary):
         return manager
 
     def _get_lidar_readings(self, drone_pos):
-        """获取12个方向的激光雷达读数"""
+        """Get 12-directional LiDAR readings for obstacle detection."""
         num_rays = 12
         max_distance = self.SENSING_RANGE
         
@@ -216,7 +273,7 @@ class DRLAviary(BaseRLAviary):
             else:
                 angles = [-np.pi/4, np.pi/4, -np.pi/6, np.pi/6]
                 angle = angles[i-8]
-                direction = np.array([np.cos(angle), 0, np.sin(angle)]) # Forward tilt
+                direction = np.array([np.cos(angle), 0, np.sin(angle)])  # Forward tilt
             
             ray_start = drone_pos
             ray_end = drone_pos + direction * max_distance
@@ -226,9 +283,9 @@ class DRLAviary(BaseRLAviary):
             if hit_info[0][0] != -1:
                 hit_body_id = hit_info[0][0]
                 
-                # 过滤掉目标点的 body ID
+                # Filter out target point body IDs
                 if hit_body_id in self.target_body_ids:
-                    distances.append(max_distance)  # 忽略目标点，视为无障碍
+                    distances.append(max_distance)  # Ignore target, treat as no obstacle
                 else:
                     hit_distance = hit_info[0][2] * max_distance
                     distances.append(hit_distance)
@@ -238,26 +295,26 @@ class DRLAviary(BaseRLAviary):
         return np.array(distances)
 
     def _update_hover_timer(self, drone_pos):
-        """更新悬停计时器（同时考虑位置和角速度稳定性）"""
+        """Update hovering timer considering both position and angular velocity stability."""
         state = self._getDroneStateVector(0)
         angular_vel = state[13:16]
         angular_velocity_norm = np.linalg.norm(angular_vel)
         
         distance_to_target = np.linalg.norm(self.TARGET_POS - drone_pos)
         
-        # 🔧 修改：同时满足位置和角速度条件才算有效悬停
+        # Valid hovering requires both position and angular velocity conditions
         if (distance_to_target < self.HOVER_THRESHOLD and 
-            angular_velocity_norm < 0.3):  # 角速度阈值
+            angular_velocity_norm < 0.3):  # Angular velocity threshold
             self.time_at_target += 1.0 / self.CTRL_FREQ
         else:
-            self.time_at_target = 0  # 不满足条件时重置
+            self.time_at_target = 0  # Reset when conditions not met
 
     def _computeObs(self):
-        """Override to include lidar and target information in the observation"""
-        # 获取基础观察
+        """Override to include LiDAR and target information in the observation."""
+        # Get base observation
         base_obs = super()._computeObs()
         
-        # 确保base_obs是1维数组
+        # Ensure base_obs is 1D array
         if isinstance(base_obs, np.ndarray):
             if base_obs.ndim > 1:
                 base_obs = base_obs.flatten()
@@ -270,7 +327,7 @@ class DRLAviary(BaseRLAviary):
         current_vel = state[10:13]
         angular_vel = state[13:16]
         
-        # 🔊 Apply sensor noise to state readings if noise is enabled
+        # Apply sensor noise to state readings if noise is enabled
         if self.enable_noise and self.noise_manager is not None:
             # Apply sensor noise to position, velocity, and angular velocity
             current_pos_noisy, current_vel_noisy, angular_vel_noisy = self.noise_manager.add_sensor_noise(
@@ -289,46 +346,46 @@ class DRLAviary(BaseRLAviary):
         lidar_readings = self._get_lidar_readings(current_pos)
         relative_target = self.TARGET_POS - current_pos
         
-        # 🔧 新增：基于机体坐标系的相对目标位置
-        # 将世界坐标系中的相对目标位置转换到机体坐标系
+        # Body frame relative target position
+        # Convert world frame relative target position to body frame
         yaw = rpy[2]
         cos_yaw, sin_yaw = np.cos(yaw), np.sin(yaw)
         
-        # 旋转矩阵（只考虑yaw，因为roll和pitch主要用于控制移动）
+        # Rotation matrix (only yaw considered, as roll and pitch mainly control movement)
         relative_target_body = np.array([
-            cos_yaw * relative_target[0] + sin_yaw * relative_target[1],  # 前后方向
-            -sin_yaw * relative_target[0] + cos_yaw * relative_target[1], # 左右方向
-            relative_target[2]  # 上下方向
+            cos_yaw * relative_target[0] + sin_yaw * relative_target[1],  # Forward-backward direction
+            -sin_yaw * relative_target[0] + cos_yaw * relative_target[1], # Left-right direction
+            relative_target[2]  # Up-down direction
         ])
         
-        # 🔧 新增：基于机体坐标系的速度分量
+        # Body frame velocity components
         velocity_body = np.array([
-            cos_yaw * current_vel[0] + sin_yaw * current_vel[1],  # 前后速度
-            -sin_yaw * current_vel[0] + cos_yaw * current_vel[1], # 左右速度
-            current_vel[2]  # 上下速度
+            cos_yaw * current_vel[0] + sin_yaw * current_vel[1],  # Forward-backward velocity
+            -sin_yaw * current_vel[0] + cos_yaw * current_vel[1], # Left-right velocity
+            current_vel[2]  # Up-down velocity
         ])
         
-        # 🔧 新增：到目标的距离和方向信息
+        # Distance and direction information to target
         distance_to_target = np.linalg.norm(relative_target)
         target_angle = np.arctan2(relative_target[1], relative_target[0]) - yaw
-        # 规范化角度到 [-π, π]
+        # Normalize angle to [-π, π]
         while target_angle > np.pi:
             target_angle -= 2 * np.pi
         while target_angle < -np.pi:
             target_angle += 2 * np.pi
         
         enhanced_obs = np.concatenate([
-            base_obs,                    # 原始观察
-            lidar_readings,              # 12个激光雷达读数
-            relative_target,             # 世界坐标系相对目标位置 (3)
-            relative_target_body,        # 机体坐标系相对目标位置 (3) - 新增
-            velocity_body,               # 机体坐标系速度 (3) - 新增
-            [distance_to_target],        # 到目标距离 (1) - 新增
-            [target_angle],              # 目标角度 (1) - 新增
-            [np.sin(target_angle), np.cos(target_angle)]  # 角度的sin/cos表示 (2) - 新增
+            base_obs,                    # Original observation
+            lidar_readings,              # 12 LiDAR readings
+            relative_target,             # World frame relative target position (3)
+            relative_target_body,        # Body frame relative target position (3)
+            velocity_body,               # Body frame velocity (3)
+            [distance_to_target],        # Distance to target (1)
+            [target_angle],              # Target angle (1)
+            [np.sin(target_angle), np.cos(target_angle)]  # Angle sin/cos representation (2)
         ])
         
-        # 🔊 Apply observation noise if enabled
+        # Apply observation noise if enabled
         if self.enable_noise and self.noise_manager is not None:
             enhanced_obs = self.noise_manager.add_observation_noise(enhanced_obs)
         
@@ -337,6 +394,7 @@ class DRLAviary(BaseRLAviary):
     ########################################################################
     # Pybullet methods
     def _drawConnectionLine(self):
+        """Draw connection line between drone and target with status-based color coding."""
         if self.GUI:
             drone_state = self._getDroneStateVector(0)
             drone_pos = drone_state[0:3]
@@ -344,13 +402,13 @@ class DRLAviary(BaseRLAviary):
             if self.connection_line_id is not None:
                 p.removeUserDebugItem(self.connection_line_id, physicsClientId=self.CLIENT)
             
-            # 根据任务状态选择不同颜色
+            # Choose color based on task status
             if self.time_at_target >= self.required_hover_time:
-                color = [0, 1, 0]  # 绿色 - 任务完成
+                color = [0, 1, 0]  # Green - task completed
             elif self.time_at_target > 0:
-                color = [1, 1, 0]  # 黄色 - 正在悬停
+                color = [1, 1, 0]  # Yellow - hovering
             else:
-                color = [0, 0, 1]  # 蓝色 - 导航中
+                color = [0, 0, 1]  # Blue - navigating
             
             self.connection_line_id = p.addUserDebugLine(
                 lineFromXYZ=drone_pos,
@@ -362,8 +420,8 @@ class DRLAviary(BaseRLAviary):
             )
 
     def _addObstacles(self):
-        """添加随机障碍物和目标可视化"""
-        # clear existing obstacles
+        """Add random obstacles and target visualization to the environment."""
+        # Clear existing obstacles
         for obs_id in self.obstacle_ids:
             p.removeBody(obs_id, physicsClientId=self.CLIENT)
         self.obstacle_ids = []
@@ -371,7 +429,6 @@ class DRLAviary(BaseRLAviary):
 
         # Randomly place obstacles between start and end points
         if self.ENABLE_OBSTACLES:
-            # print("Adding obstacles...")
             for i in range(self.NUM_OBSTACLES):
                 max_attempts = 50
                 for attempt in range(max_attempts):
@@ -408,18 +465,16 @@ class DRLAviary(BaseRLAviary):
                 
                 self.obstacle_ids.append(body_id)
                 self.obstacle_positions.append(pos)
-        # else:
-            # print(f"⭕ No obstacles added - obstacle-free training mode")
 
         self._visualizeTarget()
 
     def _visualizeTarget(self):
-        """Visualize the target position and area"""
+        """Visualize the target position and completion area."""
         if self.GUI:
             target_visual = p.createVisualShape(
                 shapeType=p.GEOM_SPHERE,
                 radius=0.1,
-                rgbaColor=[0, 1, 0, 0.3],  # 绿色半透明
+                rgbaColor=[0, 1, 0, 0.3],  # Green semi-transparent
                 physicsClientId=self.CLIENT
             )
             
@@ -449,19 +504,19 @@ class DRLAviary(BaseRLAviary):
 
             self.target_body_ids = [self.target_visual_id, self.target_area_id]
 
-    # ======================== 相机平滑处理辅助函数 ========================
+    # ======================== Camera Smoothing Helper Functions ========================
     
     def _smooth_interpolate(self, current, target):
-        """位置向量平滑插值"""
+        """Smooth interpolation for position vectors."""
         return current + (target - current) * self.camera_smoothing
     
     def _smooth_interpolate_scalar(self, current, target):
-        """标量平滑插值"""
+        """Smooth interpolation for scalar values."""
         return current + (target - current) * self.camera_smoothing
     
     def _smooth_angle_interpolate(self, current_angle, target_angle):
-        """角度平滑插值（处理角度循环问题）"""
-        # 处理角度差值的循环性质
+        """Smooth interpolation for angles (handling angle wrapping)."""
+        # Handle cyclical nature of angle differences
         diff = target_angle - current_angle
         if diff > 180:
             diff -= 360
@@ -471,15 +526,15 @@ class DRLAviary(BaseRLAviary):
         return current_angle + diff * self.camera_smoothing
 
     def _updateCamera(self):
-        """智能相机跟随系统 - 带平滑处理"""
+        """Intelligent camera follow system with smooth processing."""
         if not self.GUI or not self.camera_follow_enabled:
             return
         
-        # 🔧 降低更新频率，减少抖动
+        # Reduce update frequency to minimize jitter
         if self.step_counter % self.camera_update_freq != 0:
             return
             
-        # 获取无人机状态
+        # Get drone state
         state = self._getDroneStateVector(0)
         drone_pos = state[0:3]
         drone_vel = state[10:13]
@@ -496,46 +551,46 @@ class DRLAviary(BaseRLAviary):
             self._targetOrbitCamera(drone_pos)
     
     def _followCamera(self, drone_pos, drone_vel):
-        """第三人称跟随相机 - 平滑版本"""
-        # 预测无人机位置
+        """Third-person follow camera with smooth tracking."""
+        # Predict drone position
         predicted_pos = drone_pos + drone_vel * 0.1
         
-        # 计算基础相机位置
+        # Calculate base camera position
         velocity_direction = drone_vel / (np.linalg.norm(drone_vel) + 1e-6)
         
-        # 如果无人机静止，使用朝向目标的方向
+        # If drone is stationary, use direction towards target
         if np.linalg.norm(drone_vel) < 0.1:
             if hasattr(self, 'TARGET_POS'):
                 direction_to_target = self.TARGET_POS - drone_pos
                 velocity_direction = direction_to_target / (np.linalg.norm(direction_to_target) + 1e-6)
             else:
-                velocity_direction = np.array([1, 0, 0])  # 默认方向
+                velocity_direction = np.array([1, 0, 0])  # Default direction
         
-        # 🔧 动态相机距离调整 - 根据速度和高度调整
+        # Dynamic camera distance adjustment based on speed and height
         speed = np.linalg.norm(drone_vel)
         height = drone_pos[2]
         
-        # 基础距离 + 速度调整 + 高度调整
+        # Base distance + speed adjustment + height adjustment
         dynamic_distance = self.camera_distance + speed * 0.5 + max(0, (height - 1.0) * 0.3)
-        dynamic_distance = max(0.5, min(8.0, dynamic_distance))  # 限制范围
+        dynamic_distance = max(0.5, min(8.0, dynamic_distance))  # Limit range
         
-        # 相机位置在无人机后方
+        # Camera position behind drone
         camera_offset = -velocity_direction * dynamic_distance
         camera_offset[2] += self.camera_height_offset
         
         target_camera_pos = predicted_pos + camera_offset
         target_camera_target = drone_pos + velocity_direction * 2.0
         
-        # 初始化历史位置
+        # Initialize history positions
         if self.last_camera_pos is None:
             self.last_camera_pos = target_camera_pos
             self.last_camera_target = target_camera_target
         
-        # 平滑插值
+        # Smooth interpolation
         smooth_camera_pos = self._smooth_interpolate(self.last_camera_pos, target_camera_pos)
         smooth_camera_target = self._smooth_interpolate(self.last_camera_target, target_camera_target)
         
-        # 计算相机角度
+        # Calculate camera angles
         direction_to_target = smooth_camera_target - smooth_camera_pos
         distance = np.linalg.norm(direction_to_target[:2])
         
@@ -545,11 +600,11 @@ class DRLAviary(BaseRLAviary):
         else:
             yaw, pitch = 0, -30
         
-        # 角度平滑处理
+        # Smooth angle processing
         smooth_yaw = self._smooth_angle_interpolate(self.last_camera_yaw, yaw)
         smooth_pitch = self._smooth_interpolate_scalar(self.last_camera_pitch, pitch)
         
-        # 应用相机设置
+        # Apply camera settings
         p.resetDebugVisualizerCamera(
             cameraDistance=dynamic_distance,
             cameraYaw=smooth_yaw,
@@ -558,7 +613,7 @@ class DRLAviary(BaseRLAviary):
             physicsClientId=self.CLIENT
         )
         
-        # 更新历史值
+        # Update history values
         self.last_camera_pos = smooth_camera_pos
         self.last_camera_target = smooth_camera_target
         self.last_camera_yaw = smooth_yaw
@@ -756,20 +811,21 @@ class DRLAviary(BaseRLAviary):
         self.last_camera_pitch = smooth_pitch
 
     def toggle_camera_mode(self):
-        """切换相机模式（可以通过键盘调用）"""
+        """Toggle camera mode (can be called via keyboard)."""
         modes = ["follow", "chase", "orbit", "target_center", "target_orbit"]
         current_index = modes.index(self.camera_mode)
         self.camera_mode = modes[(current_index + 1) % len(modes)]
-        print(f"📹 相机模式切换到: {self.camera_mode}")
+        print(f"Camera mode switched to: {self.camera_mode}")
 
     def set_camera_distance(self, distance):
-        """设置相机距离"""
+        """Set camera distance with bounds checking."""
         self.camera_distance = max(0.5, min(10.0, distance))
-        print(f"📹 相机距离设置为: {self.camera_distance:.1f}m")
+        print(f"Camera distance set to: {self.camera_distance:.1f}m")
 
     #########################################################################
     # Reward functions
     def _navigationReward(self):
+        """Calculate navigation reward with multi-directional control incentives."""
         state = self._getDroneStateVector(0)
         current_pos = state[0:3]
         current_vel = state[10:13]
@@ -778,7 +834,7 @@ class DRLAviary(BaseRLAviary):
         position_error = self.TARGET_POS - current_pos
         current_distance = np.linalg.norm(position_error)
 
-        # 原有的距离奖励
+        # Distance-based reward
         distance_reward = min(1000.0, 10.0 / (1e-6 + current_distance))
         
         delta_distance = (self.last_distance_to_target - current_distance)
@@ -787,62 +843,62 @@ class DRLAviary(BaseRLAviary):
             approaching_reward = delta_distance * 10.0
         self.last_distance_to_target = current_distance
 
-        # 🔧 新增：多方向控制奖励
-        # 将位置误差转换到机体坐标系
+        # Multi-directional control reward
+        # Convert position error to body frame
         yaw = rpy[2]
         cos_yaw, sin_yaw = np.cos(yaw), np.sin(yaw)
         
         error_body = np.array([
-            cos_yaw * position_error[0] + sin_yaw * position_error[1],   # 前后误差
-            -sin_yaw * position_error[0] + cos_yaw * position_error[1],  # 左右误差
-            position_error[2]  # 上下误差
+            cos_yaw * position_error[0] + sin_yaw * position_error[1],   # Forward-backward error
+            -sin_yaw * position_error[0] + cos_yaw * position_error[1],  # Left-right error
+            position_error[2]  # Up-down error
         ])
         
         velocity_body = np.array([
-            cos_yaw * current_vel[0] + sin_yaw * current_vel[1],   # 前后速度
-            -sin_yaw * current_vel[0] + cos_yaw * current_vel[1],  # 左右速度
-            current_vel[2]  # 上下速度
+            cos_yaw * current_vel[0] + sin_yaw * current_vel[1],   # Forward-backward velocity
+            -sin_yaw * current_vel[0] + cos_yaw * current_vel[1],  # Left-right velocity
+            current_vel[2]  # Up-down velocity
         ])
         
-        # 🔧 多方向速度奖励：奖励在正确方向的速度分量
+        # Multi-directional velocity reward: reward velocity in correct direction
         forward_backward_reward = 0
         left_right_reward = 0
         up_down_reward = 0
         
-        # 如果需要前进，奖励前进速度；如果需要后退，奖励后退速度
-        if abs(error_body[0]) > 0.1:  # 前后方向有明显误差
-            desired_forward_vel = np.clip(error_body[0] * 2.0, -2.0, 2.0)  # 期望的前后速度
+        # If forward-backward movement needed, reward appropriate velocity
+        if abs(error_body[0]) > 0.1:  # Significant forward-backward error
+            desired_forward_vel = np.clip(error_body[0] * 2.0, -2.0, 2.0)  # Desired forward-backward velocity
             forward_backward_reward = 5.0 * max(0, 1.0 - abs(velocity_body[0] - desired_forward_vel) / 2.0)
         
-        # 左右方向类似
-        if abs(error_body[1]) > 0.1:  # 左右方向有明显误差
-            desired_lateral_vel = np.clip(error_body[1] * 2.0, -2.0, 2.0)  # 期望的左右速度
+        # Left-right direction similar
+        if abs(error_body[1]) > 0.1:  # Significant left-right error
+            desired_lateral_vel = np.clip(error_body[1] * 2.0, -2.0, 2.0)  # Desired left-right velocity
             left_right_reward = 5.0 * max(0, 1.0 - abs(velocity_body[1] - desired_lateral_vel) / 2.0)
         
-        # 上下方向
-        if abs(error_body[2]) > 0.1:  # 上下方向有明显误差
-            desired_vertical_vel = np.clip(error_body[2] * 1.5, -1.5, 1.5)  # 期望的上下速度
+        # Up-down direction
+        if abs(error_body[2]) > 0.1:  # Significant up-down error
+            desired_vertical_vel = np.clip(error_body[2] * 1.5, -1.5, 1.5)  # Desired up-down velocity
             up_down_reward = 5.0 * max(0, 1.0 - abs(velocity_body[2] - desired_vertical_vel) / 1.5)
         
         multi_direction_reward = forward_backward_reward + left_right_reward + up_down_reward
 
-        # 原有的精度奖励
+        # Precision reward
         k = 0.3
         x_penalty = 1.0-np.tanh(k * abs(position_error[0]))
         y_penalty = 1.0-np.tanh(k * abs(position_error[1]))
         z_penalty = 1.0-np.tanh(k * abs(position_error[2]))
         position_precision_reward = (x_penalty + y_penalty + z_penalty) * 60
 
-        # 高度安全奖励
+        # Height safety reward
         height_safety_reward = 0
         if current_pos[2] < 0.3:
             height_safety_reward = -5.0 * (0.3 - current_pos[2])
         elif current_pos[2] > 0.5:
             height_safety_reward = 2.0
 
-        # 🔧 新增：抑制不必要的yaw旋转
+        # Suppress unnecessary yaw rotation
         yaw_stability_reward = 0
-        if current_distance < self.HOVER_THRESHOLD * 2:  # 接近目标时
+        if current_distance < self.HOVER_THRESHOLD * 2:  # Near target
             angular_vel = state[13:16]
             yaw_angular_vel = abs(angular_vel[2])
             yaw_stability_reward = 3.0 * max(0, 1.0 - yaw_angular_vel / 0.5)
@@ -852,8 +908,8 @@ class DRLAviary(BaseRLAviary):
             approaching_reward +
             position_precision_reward +
             height_safety_reward +
-            multi_direction_reward +  # 新增
-            yaw_stability_reward      # 新增
+            multi_direction_reward +
+            yaw_stability_reward
         )
         
         return navigation_reward, {
@@ -1031,19 +1087,19 @@ class DRLAviary(BaseRLAviary):
         
         return obstacle_reward
     def _computeReward(self):
+        """Compute total reward from all component rewards."""
         state = self._getDroneStateVector(0)
         current_pos = state[0:3]
         current_vel = state[10:13]
         current_distance = np.linalg.norm(self.TARGET_POS - current_pos)
 
-        # 计算各个奖励组件
+        # Calculate reward components
         navigation_reward, nav_details = self._navigationReward()
         stability_reward, stab_details = self._stabilityPenalty()
         hovering_reward, hover_details = self._hoveringReward()
         obstacle_reward = self._obstacleAvoidanceReward()
         
-        
-        # 任务完成奖励
+        # Task completion reward
         survival_reward = 0.5
         completion_reward = 0
         if self.time_at_target >= self.required_hover_time:
@@ -1058,10 +1114,10 @@ class DRLAviary(BaseRLAviary):
             survival_reward
         )
 
-        # 详细调试输出
+        # Detailed debug output (commented - can be uncommented for debugging)
         if self.step_counter % 100 == 0:
             obstacle_info = f", Obstacles: {len(self.obstacle_positions)}" if self.ENABLE_OBSTACLES else ", No obstacles"
-            # print(f"\n--------------------Environments-------------------- "
+            # print(f"\n--------------------Environment-------------------- "
             #       f"\nTarget: {self.TARGET_POS}, \nDrone Pos: {current_pos}, "
             #       f"\nDistance: {current_distance:.3f},"
             #       f"Speed: {np.linalg.norm(current_vel):.2f}, "
@@ -1104,37 +1160,33 @@ class DRLAviary(BaseRLAviary):
         return total_reward
 
     def _computeTerminated(self):
-        """Is the task completed?"""
+        """Check if the task is completed (drone has hovered at target for required time)."""
         return self.time_at_target >= self.required_hover_time
 
     def _computeTruncated(self):
-        """Is the episode truncated?"""
+        """Check if the episode should be truncated due to safety violations or time limits."""
         state = self._getDroneStateVector(0)
         current_pos = state[0:3]
         
-        # Hit obstacle detection
+        # Obstacle collision detection
         if self.ENABLE_OBSTACLES:
             for obs_pos in self.obstacle_positions:
                 if np.linalg.norm(current_pos - obs_pos) < self.OBSTACLE_RADIUS + 0.05:
-                    # print(f"🚫 Truncated because of Obstacle Hit")
                     return True
         
-        # Border violation detection
+        # Boundary violation detection
         if (current_pos[0] < -2 or current_pos[0] > 5 or 
             current_pos[1] < -2 or current_pos[1] > 5 or
             current_pos[2] < 0.05 or current_pos[2] > 3.5):
-            # print(f"🚫 Truncated because of Border Violation")
             return True
         
-        # Altitude violation detection
+        # Attitude violation detection
         rpy = state[7:10]
         if abs(rpy[0]) > 1.0 or abs(rpy[1]) > 1.0:  # 57 degrees
-            # print(f"🚫 Truncated because of Altitude Violation")
             return True
         
         # Time limit detection
         if self.step_counter / self.PYB_FREQ > self.EPISODE_LEN_SEC:
-            # print(f"🚫 Truncated because of Time Limit")
             return True
         
         return False
@@ -1203,33 +1255,34 @@ class DRLAviary(BaseRLAviary):
         print("="*60)
     
     def reset(self, seed=None, options=None):
-        '''reset state'''
-        # 🔊 Update episode count for noise manager
+        """Reset the environment for a new episode."""
+        # Update episode count for noise manager
         if self.enable_noise and self.noise_manager is not None:
             self.noise_manager.new_episode()
         
         self.total_episodes += 1
         
-        # 记录上一个episode的结束时间
+        # Record previous episode timing
         if self.episode_start_time is not None:
             episode_duration = time.time() - self.episode_start_time
             self.episode_times.append(episode_duration)
             self.total_training_time += episode_duration
             
-            # 打印episode统计信息
+            # Print episode statistics
             self.episode_count += 1
             avg_time = np.mean(self.episode_times[-10:]) if len(self.episode_times) >= 10 else np.mean(self.episode_times)
             
             task_completed = self.time_at_target >= self.required_hover_time
 
-            # print(f"📊 Episode {self.episode_count} completed:")
+            # Essential debug info for performance tracking (commented - can be uncommented)
+            # print(f"Episode {self.episode_count} completed:")
             # print(f"   Duration: {episode_duration:.2f}s")
             # print(f"   Hover time: {self.time_at_target:.1f}s")
-            # print(f"   Task completed: {'✅ Yes' if task_completed else '❌ No'}")
+            # print(f"   Task completed: {'Yes' if task_completed else 'No'}")
             # print(f"   Avg time (last 10): {avg_time:.2f}s")
             # print(f"   Total training time: {self.total_training_time/60:.1f}min")
             
-            # 如果任务完成，记录完成时间
+            # Record task completion if successful
             if task_completed:
                 self.task_completion_times.append(episode_duration)
                 success_rate = len(self.task_completion_times) / self.episode_count * 100
@@ -1237,7 +1290,7 @@ class DRLAviary(BaseRLAviary):
                 print(f"   Success rate: {success_rate:.1f}%")
                 print(f"   Avg completion time: {avg_completion_time:.2f}s")
         
-        # 开始新episode的计时
+        # Start new episode timing
         self.episode_start_time = time.time()
 
         # Remove existing target bodies
@@ -1250,11 +1303,11 @@ class DRLAviary(BaseRLAviary):
 
         self.time_at_target = 0
         
-        # 🔧 新增：重置yaw目标
+        # Reset yaw target
         if hasattr(self, 'target_yaw'):
             delattr(self, 'target_yaw')
         
-        # Randomise start and target positions if enabled
+        # Randomize start and target positions if enabled
         if self.RANDOMIZE_INIT:
             self.START_POS = np.array([
                 np.random.uniform(-0.5, 0.5),
@@ -1291,7 +1344,8 @@ class DRLAviary(BaseRLAviary):
         return self._computeObs(), self._computeInfo()
 
     def step(self, action):
-        # 🔊 Apply action noise if enabled
+        """Execute one environment step with optional noise injection."""
+        # Apply action noise if enabled
         if self.enable_noise and self.noise_manager is not None:
             action = self.noise_manager.add_action_noise(action)
             self.noise_manager.step()
@@ -1305,20 +1359,20 @@ class DRLAviary(BaseRLAviary):
             # 'C': Toggle camera mode
             if ord('c') in keys and keys[ord('c')] & p.KEY_WAS_TRIGGERED:
                 self.toggle_camera_mode()
-            # '=': Increase camera distance'
+            # '=': Increase camera distance
             elif ord('=') in keys and keys[ord('=')] & p.KEY_WAS_TRIGGERED:
                 self.set_camera_distance(self.camera_distance + 0.1)
-            # '-': Decrease camera distance'
+            # '-': Decrease camera distance
             elif ord('-') in keys and keys[ord('-')] & p.KEY_WAS_TRIGGERED:
                 self.set_camera_distance(self.camera_distance - 0.1)
         
-        # Update visualisation
+        # Update visualization
         if self.GUI and self.step_counter % 5 == 0:
             self._drawConnectionLine()
         if self.GUI and self.step_counter % 1 == 0:
             self._updateCamera()
         
-        # 🔊 Update noise UI if enabled
+        # Update noise UI if enabled
         if self.enable_noise and self.noise_manager is not None and self.GUI and self.show_noise_ui:
             if self.step_counter % 10 == 0:  # Update every 10 steps to avoid performance issues
                 self.noise_manager._update_ui_display()
@@ -1328,37 +1382,37 @@ class DRLAviary(BaseRLAviary):
     # ======================== Gaussian Noise Control Methods ========================
     
     def set_training_mode(self, training: bool):
-        """设置训练/评估模式"""
+        """Set training/evaluation mode for noise management."""
         if self.noise_manager is not None:
             self.noise_manager.set_training_mode(training)
-            print(f"🔊 Noise mode set to: {'Training' if training else 'Evaluation'}")
+            print(f"Noise mode set to: {'Training' if training else 'Evaluation'}")
     
     def get_noise_statistics(self):
-        """获取噪声统计信息"""
+        """Get noise statistics if noise manager is available."""
         if self.noise_manager is not None:
             return self.noise_manager.get_noise_statistics()
         return {}
     
     def print_noise_stats(self):
-        """打印噪声统计"""
+        """Print noise statistics."""
         if self.noise_manager is not None:
-            print("\n🔊 Gaussian Noise Statistics:")
+            print("\nGaussian Noise Statistics:")
             self.noise_manager.print_noise_statistics()
         else:
-            print("🔇 No noise statistics available (noise disabled)")
+            print("No noise statistics available (noise disabled)")
     
     def toggle_noise_ui(self):
-        """切换噪声UI显示"""
+        """Toggle noise UI display."""
         if self.enable_noise and self.noise_manager is not None:
             self.show_noise_ui = not self.show_noise_ui
             if self.show_noise_ui and self.GUI:
                 self.noise_manager._setup_ui_display()
-            print(f"🔊 Noise UI {'enabled' if self.show_noise_ui else 'disabled'}")
+            print(f"Noise UI {'enabled' if self.show_noise_ui else 'disabled'}")
         else:
-            print("⚠️ Noise not enabled or not available")
+            print("Warning: Noise not enabled or not available")
     
     def get_noise_info(self):
-        """获取噪声配置信息"""
+        """Get noise configuration information."""
         if self.noise_manager is not None:
             return {
                 'enabled': self.enable_noise,

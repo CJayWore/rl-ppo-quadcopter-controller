@@ -336,7 +336,7 @@ class DSLPIDControl(BaseControl):
                         + np.multiply(self.I_COEFF_FOR, self.integral_pos_e) \
                         + np.multiply(self.D_COEFF_FOR, vel_e) + np.array([0, 0, self.GRAVITY])
         
-        #### 🛡️ Apply tilt angle limiting for safety ###############
+        #### Apply tilt angle limiting for safety ###############
         limited_thrust = self._limitTiltAngles(target_thrust)
         
         # Additional startup limiting - more conservative during startup
@@ -408,13 +408,13 @@ class DSLPIDControl(BaseControl):
                          + np.multiply(self.D_COEFF_TOR, rpy_rates_e) \
                          + np.multiply(self.I_COEFF_TOR, self.integral_rpy_e)
         
-        # 🛡️ More conservative torque limiting during startup
+        # More conservative torque limiting during startup
         max_torque = 2400 if not self.is_startup_complete else 3200
         target_torques = np.clip(target_torques, -max_torque, max_torque)
         
         pwm = thrust + np.dot(self.MIXER_MATRIX, target_torques)
         
-        # 🛡️ Apply safe PWM limits to prevent motor over-saturation
+        # Apply safe PWM limits to prevent motor over-saturation
         pwm = np.clip(pwm, self.MIN_PWM, self.SAFE_MAX_PWM)
         
         self.last_target_torques = target_torques

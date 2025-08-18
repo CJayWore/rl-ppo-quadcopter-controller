@@ -1,28 +1,29 @@
 # PID Controller Performance Evaluation Report
-Generated on: 2025-08-17 15:55:41
+Generated on: 2025-08-18 15:54:49
 
 ## Summary Statistics
-- **Episodes Evaluated**: 3
-- **Task Completion Rate**: 100.0%
-- **Hover Success Rate**: 100.0%
-- **Crash Rate**: 0.0%
+- **Episodes Evaluated**: 1000
+- **Task Completion Rate**: 8.6%
+- **Hover Success Rate**: 0.0%
+- **Crash Rate**: 99.8%
 
 ## Position Control Performance
-- **RMSE Position Error**: 0.2021 m
-- **Mean Absolute Error**: 0.0921 m
-- **Maximum Position Error**: 0.7327 m
-- **Average Settling Time**: 4.83 s
-- **Average Overshoot**: 0.0%
+- **RMSE Position Error**: 0.4752 m
+- **Mean Absolute Error**: 0.3329 m
+- **Maximum Position Error**: 2.3348 m
+- **Average Settling Time**: 2.16 s
+- **Average Overshoot**: 67.5%
 
 ## Control Quality
 - **Control Efficiency**: 0.0000
-- **Average Control Energy**: 259129221556.67
-- **Average Control Smoothness**: 0.0009
-- **Average Attitude Stability**: 0.9976
+- **Average Control Energy**: 182834354707.15
+- **Average Control Smoothness**: 0.0000
+- **Average Attitude Stability**: nan
 
 ## Episode Statistics
-- **Average Episode Duration**: 0.12 s
-- **Average Hover Time**: 4.98 s
+- **Average Episode Duration**: 0.67 s
+- **Average Hover Time**: 0.00 s
 
 ## Termination Reasons
-- **Success**: 3 episodes (100.0%)
+- **Crash**: 998 episodes (99.8%)
+- **Timeout**: 2 episodes (0.2%)

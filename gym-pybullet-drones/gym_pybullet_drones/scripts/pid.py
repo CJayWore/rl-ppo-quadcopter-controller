@@ -21,54 +21,43 @@ The simulation is run by a `CtrlAviary` environment.
 The control is given by the PID implementation in `DSLPIDControl`.
 
 Usage Command:
-----------
-python pid.py --max_episodes 100 --episode_timeout_sec 8 --target_hover_time 5.0 --gui False --randomize_positions True --use_best_params True --plot False --enable_performance_eval True
+    python pid.py --max_episodes 1000 --episode_timeout_sec 8 --target_hover_time 5.0 --gui False --randomize_positions True --use_best_params True --plot False --enable_performance_eval True
 
-Features
---------
-- Multi-drone simulation with independent PID controllers
-- Hovering at randomized target positions
-- Visualization options via PyBullet GUI
-- Data logging and plotting capabilities
-- Customizable simulation parameters
+Features:
+    - Multi-drone simulation with independent PID controllers
+    - Hovering at randomized target positions
+    - Visualization options via PyBullet GUI
+    - Data logging and plotting capabilities
+    - Customizable simulation parameters
 
-Notes
------
-The drones start at randomized initial positions and navigate to randomized
-target positions, then hover there for the remainder of the simulation.
+Notes:
+    The drones start at randomized initial positions and navigate to randomized
+    target positions, then hover there for the remainder of the simulation.
 
-Outputs
--------
-- Simulation logs saved to the specified output folder
-- Optional CSV export of flight data
-- Optional plots showing drone positions, orientations, and control inputs
+Outputs:
+    - Simulation logs saved to the specified output folder
+    - Optional CSV export of flight data
+    - Optional plots showing drone positions, orientations, and control inputs
 """
 
 import json
 import os
 import time
 import argparse
-from datetime import datetime
-import pdb
-import math
-import random
 import numpy as np
 import pybullet as p
-import matplotlib.pyplot as plt
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 from gym_pybullet_drones.utils.Logger import Logger
 from gym_pybullet_drones.utils.utils import sync, str2bool
+from pid_performance_evaluation import PIDPerformanceEvaluator
+from scripts.rl_framework.gaussian_noise import GaussianNoiseManager, create_light_noise_manager, create_heavy_noise_manager, NoiseType
 
-# Import PID Performance Evaluation
-try:
-    from pid_performance_evaluation import PIDPerformanceEvaluator
-    PERFORMANCE_EVAL_AVAILABLE = True
-except ImportError:
-    print("⚠️  PID Performance Evaluation not available")
-    PERFORMANCE_EVAL_AVAILABLE = False
 
 DEFAULT_DRONES = DroneModel("cf2p")
 DEFAULT_NUM_DRONES = 1
@@ -198,12 +187,12 @@ def load_best_pid_params(json_file="Best_PID_Params/best_pid_params.json"):
             
             print(f"🏆 Loading PID parameters (Score: {score})")
             print(f"📅 Generated: {data.get('timestamp', 'Unknown')}")
-            print(f"🎯 Parameter set: {best_params['name']}")
+            print(f"Target: Parameter set: {best_params['name']}")
             print(f"🎪 Task type: {data.get('task_type', 'Unknown')}")
             
             return best_params
         else:
-            print(f"❌ PID parameters file not found: {json_path}")
+            print(f"Error: PID parameters file not found: {json_path}")
             print(f"💡 Trying fallback files...")
             
             # 尝试加载其他文件
@@ -230,7 +219,7 @@ def load_best_pid_params(json_file="Best_PID_Params/best_pid_params.json"):
                 'att_d': [800, 800, 600]
             }
     except Exception as e:
-        print(f"❌ Failed to load PID parameters: {e}")
+        print(f"Error: Failed to load PID parameters: {e}")
         print(f"💡 Using default conservative parameters")
         return {
             'name': 'DefaultConservative',
@@ -361,7 +350,7 @@ def generate_episode_positions(num_drones, randomize_positions):
         INIT_XYZS = np.array(START_POSITIONS)
         TARGET_POS_ARRAY = np.array(TARGET_POSITIONS)
         
-        print(f"🎯 New randomized positions for {num_drones} drone(s):")
+        print(f"Target: New randomized positions for {num_drones} drone(s):")
         for i in range(num_drones):
             distance = np.linalg.norm(TARGET_POS_ARRAY[i] - INIT_XYZS[i])
             print(f"   Drone {i}: Start {INIT_XYZS[i]} -> Target {TARGET_POS_ARRAY[i]} (dist: {distance:.2f}m)")
@@ -402,7 +391,11 @@ def run(
         crash_altitude=DEFAULT_CRASH_ALTITUDE,
         # Performance evaluation parameters
         enable_performance_eval=False,  # Enable detailed performance evaluation
-        performance_output_folder=None  # Custom output folder for performance results
+        performance_output_folder=None,  # Custom output folder for performance results
+        # Noise parameters
+        enable_noise=False,
+        noise_level='medium',
+        noise_decay=True
         ):
     
     # Generate initial positions for first episode
@@ -437,7 +430,7 @@ def run(
     connection_line_ids = []
     
     if gui:
-        print("🎯 Creating target visualizations...")
+        print("Target: Creating target visualizations...")
         
         # 创建目标可视化
         target_visual_ids = visualize_targets(TARGET_POS_ARRAY, PYB_CLIENT, target_radius=0.15)
@@ -445,7 +438,7 @@ def run(
         # 绘制从起始位置到目标的连接线
         connection_line_ids = draw_connection_lines(INIT_XYZS, TARGET_POS_ARRAY, PYB_CLIENT)
         
-        print(f"✅ Created {len(target_visual_ids)//2} target visualizations and {len(connection_line_ids)} connection lines")
+        print(f"Success: Created {len(target_visual_ids)//2} target visualizations and {len(connection_line_ids)} connection lines")
 
     #### Initialize the logger #################################
     logger = Logger(logging_freq_hz=control_freq_hz,
@@ -454,18 +447,37 @@ def run(
                     colab=colab
                     )
 
+    #### Initialize noise manager ##############################
+    noise_manager = None
+    if enable_noise:
+        if noise_level == 'light':
+            noise_manager = create_light_noise_manager()
+        elif noise_level == 'heavy':
+            noise_manager = create_heavy_noise_manager()
+        else: # medium
+            noise_manager = GaussianNoiseManager()
+        
+        # Configure decay
+        for config in noise_manager.noise_configs.values():
+            config.adaptive = noise_decay
+
+        print("🔊 Gaussian noise enabled.")
+    elif enable_noise:
+        print("Warning: Noise manager not available, noise will not be added.")
+    
+
     #### Initialize performance evaluator (if enabled) ######
     performance_evaluator = None
-    if enable_performance_eval and PERFORMANCE_EVAL_AVAILABLE:
+    if enable_performance_eval:
         perf_output = performance_output_folder if performance_output_folder else os.path.join(output_folder, "performance_analysis")
         performance_evaluator = PIDPerformanceEvaluator(output_folder=perf_output)
-        print(f"📊 Performance evaluation enabled - output: {perf_output}")
+        print(f"Stats: Performance evaluation enabled - output: {perf_output}")
         
         # Start evaluation session
         target_pos_for_eval = TARGET_POS_ARRAY[0] if len(TARGET_POS_ARRAY) > 0 else np.array([1.5, 1.5, 1.2])
         performance_evaluator.start_evaluation(target_pos_for_eval)
     elif enable_performance_eval:
-        print("⚠️  Performance evaluation requested but not available")
+        print("Warning:  Performance evaluation requested but not available")
     
     #### Initialize the controllers ############################
     if drone in [DroneModel.CF2X, DroneModel.CF2P]:
@@ -475,7 +487,7 @@ def run(
                 # 使用自定义PID参数
                 ctrl = []
                 for i in range(num_drones):
-                    print(f"🛡️ Using DSLPIDControl with safety features for drone {i}")
+                    print(f"Safety: Using DSLPIDControl with safety features for drone {i}")
                     controller = DSLPIDControl(drone_model=drone)
                     
                     # 可选：调整安全参数
@@ -498,7 +510,7 @@ def run(
                     ctrl.append(controller)
             else:
                 # 使用默认参数
-                print(f"🛡️ Using DSLPIDControl with safety features and default parameters")
+                print(f"Safety: Using DSLPIDControl with safety features and default parameters")
                 ctrl = []
                 for i in range(num_drones):
                     controller = DSLPIDControl(drone_model=drone)
@@ -515,7 +527,7 @@ def run(
             # Print controller status
             if hasattr(ctrl[0], 'getSafetyStatus'):
                 status = ctrl[0].getSafetyStatus()
-                print(f"🛡️ Safety Controller Status:")
+                print(f"Safety: Safety Controller Status:")
                 print(f"   Max tilt angle: {status['max_tilt_angle_deg']:.1f}°")
                 print(f"   Max motor output: {status['max_motor_output_pct']:.1f}%")
                 print(f"   Safe PWM limit: {status['safe_max_pwm']}")
@@ -537,7 +549,7 @@ def run(
     successful_episodes = 0
     episode_data = []
     
-    print(f"\n🚀 Starting multi-episode simulation:")
+    print(f"\nStarting: Starting multi-episode simulation:")
     print(f"   Max episodes: {max_episodes}")
     print(f"   Episode timeout: {episode_timeout_sec}s")
     print(f"   Hover time required: {target_hover_time}s")
@@ -557,7 +569,7 @@ def run(
         episode_success = False
         termination_reason = "timeout"
         
-        print(f"\n📊 Episode {total_episodes + 1}/{max_episodes} starting...")
+        print(f"\nStats: Episode {total_episodes + 1}/{max_episodes} starting...")
         
         # Start performance evaluation episode
         if performance_evaluator:
@@ -601,7 +613,13 @@ def run(
 
             #### Step the simulation ###################################
             obs, reward, terminated, truncated, info = env.step(action)
-            
+
+            # Add Gaussian noise if enabled
+            if noise_manager:
+                for i in range(num_drones):
+                    obs[i] = noise_manager.add_observation_noise(obs[i])
+                noise_manager.step()
+
             # Update hover timer and check termination conditions
             hover_duration, is_hovering = update_hover_timer(obs, TARGET_POS_ARRAY, hover_start_time, 
                                                             current_time, position_threshold)
@@ -679,8 +697,8 @@ def run(
         if episode_success:
             successful_episodes += 1
             
-        print(f"📊 Episode {total_episodes + 1} completed:")
-        print(f"   Result: {'✅ SUCCESS' if episode_success else '❌ FAILURE'} ({termination_reason})")
+        print(f"Stats: Episode {total_episodes + 1} completed:")
+        print(f"   Result: {'Success: SUCCESS' if episode_success else 'Error: FAILURE'} ({termination_reason})")
         print(f"   Duration: {episode_duration:.1f}s")
         print(f"   Steps: {episode_step_count}")
         print(f"   Hover time: {hover_duration:.1f}s")
@@ -703,7 +721,7 @@ def run(
         
         print(f"\n📋 Episode breakdown:")
         for ep in episode_data:
-            status = "✅" if ep['success'] else "❌"
+            status = "Success:" if ep['success'] else "Error:"
             print(f"   Episode {ep['episode']}: {status} {ep['reason']} ({ep['duration']:.1f}s, {ep['hover_time']:.1f}s hover)")
 
     #### Clean up visualizations ################################
@@ -720,9 +738,9 @@ def run(
 
     #### Finalize performance evaluation ####################
     if performance_evaluator:
-        print(f"\n📊 Finalizing performance evaluation...")
+        print(f"\nStats: Finalizing performance evaluation...")
         performance_results = performance_evaluator.finalize_evaluation()
-        print(f"🎯 Performance evaluation completed!")
+        print(f"Target: Performance evaluation completed!")
     
     #### Save the simulation results ###########################
     logger.save()
@@ -760,8 +778,18 @@ if __name__ == "__main__":
     parser.add_argument('--position_threshold',  default=DEFAULT_POSITION_THRESHOLD, type=float, help='Position threshold for hovering (default: 0.1)', metavar='')
     parser.add_argument('--crash_altitude',      default=DEFAULT_CRASH_ALTITUDE, type=float, help='Crash altitude threshold (default: 0.1)', metavar='')
     # Performance evaluation arguments
-    parser.add_argument('--enable_performance_eval', default=False, type=str2bool, help='Enable detailed performance evaluation (default: False)', metavar='')
-    parser.add_argument('--performance_output_folder', default=None, type=str, help='Custom output folder for performance results (default: output_folder/performance_analysis)', metavar='')
+    parser.add_argument('--enable_performance_eval', type=str2bool, default=False, help='Enable detailed performance evaluation')
+    parser.add_argument('--performance_output_folder', type=str, default=None, help='Custom output folder for performance results')
+    
+    # Gaussian noise parameters
+    parser.add_argument('--enable_noise', default=False, type=str2bool,
+                       help='Whether to enable Gaussian noise during training (default: False)')
+    parser.add_argument('--noise_level', default='medium', type=str,
+                       choices=['light', 'medium', 'heavy'],
+                       help='Noise level: light, medium, or heavy (default: medium)')
+    parser.add_argument('--noise_decay', default=True, type=str2bool,
+                       help='Whether noise should decay with training progress (default: True)')
+
     ARGS = parser.parse_args()
 
     run(**vars(ARGS))

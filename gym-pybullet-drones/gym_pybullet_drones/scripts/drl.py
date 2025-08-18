@@ -2,49 +2,25 @@
 """
 Modular Deep Reinforcement Learning Script for Multi-Task Drone Control
 
-This script uses a modular framework approach for training and evaluating 
-PPO agents for various drone control tasks.
-
-cd gym-pybullet-drones/gym_pybullet_drones/scripts
+This script provides a modular framework for training and evaluating 
+PPO agents on various drone control tasks including navigation, 
+obstacle avoidance, and hovering.
 
 Usage Examples:
-------------------------------------------------------------------------------------------------------------
-    # Disable obstacles
-    # Training
-    python drl.py --task unified --train_mode True --episodes 1000 --enable_obstacles False
+    Training:
+        python drl.py --task unified --train_mode True --episodes 1000
+        python drl.py --task unified --train_mode True --load_model results/unified/best_model.zip --episodes 10000
     
-    # Continue training
-    python drl.py --task unified --train_mode True --load_model results/unified/best_model.zip --enable_obstacles False --episodes 10000
-------------------------------------------------------------------------------------------------------------
-    # Enable obstacles
-    # Training
-    python drl.py --task unified --train_mode True --episodes 1000
+    Evaluation:
+        python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 1000 --gui False --generate_latex True
     
-    # Continue training
-    python drl.py --task unified --train_mode True --load_model results/unified/best_model.zip --episodes 10000
-
--------------------------------------------------------------------------------------------------------------
-    # Enable Gaussian noise
-    --enable_noise True --noise_level light
-    --noise_level light/medium/heavy
-    -- noise_decay True/False (default: True)
-
--------------------------------------------------------------------------------------------------------------
-    
-    # Evaluation
-    python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 1000 --gui False --generate_latex True
-    
-    # Detailed evaluation with custom duration and LaTeX output
-    python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 50 --eval_duration 180 --generate_latex True
-    
-    # GUI evaluation with custom output directory for papers
-    python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --output_dir paper_results --generate_latex True --gui True
+    With Gaussian Noise:
+        python drl.py --task unified --train_mode True --enable_noise True --noise_level medium
 """
 
 import os
 import sys
 
-# Add the framework to the Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from rl_framework import (
@@ -59,11 +35,9 @@ from rl_framework import (
 
 def main():
     """Main entry point for the modular RL script."""
-    # Parse command line arguments
     parser = create_argument_parser()
     args = parser.parse_args()
     
-    # Create configuration objects
     training_config = TrainingConfig(
         task=args.task,
         trajectory_type=args.trajectory_type,
@@ -87,78 +61,68 @@ def main():
         colab=args.colab
     )
     
-    # Handle list models request
     if args.list_models:
         model_manager = ModelManager(args.output_folder)
         model_manager.list_available_models()
         return
     
-    # Handle performance evaluation requests
     if args.performance_eval:
-        print("📊 Running Performance Evaluation...")
-        print(f"🎮 GUI Mode: {'Enabled' if args.gui else 'Disabled'}")
+        print("Running Performance Evaluation...")
+        # print(f"GUI Mode: {'Enabled' if args.gui else 'Disabled'}")
         
-        # Use custom output directory if specified
         output_folder = args.output_dir if args.output_dir else args.output_folder
         logger = DronePerformanceLogger(output_folder)
         
         model_name = args.model_names[0] if args.model_names and len(args.model_names) > 0 else None
         num_episodes = args.eval_episodes
         
-        # Evaluate the model with GUI support
         results = logger.evaluate_model(args.evaluate_model, num_episodes, model_name, args.eval_duration, gui_enabled=args.gui)
         
         if results:
-            # Generate reports and visualizations
             logger.generate_performance_report()
             if args.generate_latex:
                 logger.generate_latex_table()
             logger.visualize_performance(save_plots=True)
         
-        print(f"✅ Performance evaluation completed!")
+        print("Performance evaluation completed!")
         return
     
-    # Create output folder
     os.makedirs(args.output_folder, exist_ok=True)
     
-    # Create trainer and run
     trainer = DroneRLTrainer(training_config, env_config, model_config)
     
-    # Print configuration summary
-    print("🚀 Modular Drone RL Framework")
+    print("Modular Drone RL Framework")
     print("="*50)
-    print(f"🎯 Task: {args.task}")
+    print(f"Task: {args.task}")
     if args.task == "trajectory":
-        print(f"🛤️  Trajectory type: {args.trajectory_type}")
-    print(f"🎮 Mode: {'Training' if args.train_mode else 'Evaluation'}")
-    print(f"📁 Output folder: {args.output_folder}")
+        print(f"Trajectory type: {args.trajectory_type}")
+    print(f"Mode: {'Training' if args.train_mode else 'Evaluation'}")
+    print(f"Output folder: {args.output_folder}")
     if args.task == "unified":
-        print(f"🚧 Obstacles: {'Enabled' if args.enable_obstacles else 'Disabled'}")
+        print(f"Obstacles: {'Enabled' if args.enable_obstacles else 'Disabled'}")
     print("="*50)
     
     try:
         if args.train_mode:
-            # Training mode
             result_folder = trainer.run_training()
             
             if not args.colab:
-                print(f"\n🎉 Training completed successfully!")
-                print(f"📊 Results saved to: {result_folder}")
-                print(f"\n💡 Next steps:")
-                print(f"   • List models: python d r l.py --list_models")
+                print(f"\nTraining completed successfully!")
+                print(f"Results saved to: {result_folder}")
+                print(f"\nNext steps:")
+                print(f"   • List models: python drl.py --list_models")
                 print(f"   • Evaluate: python drl.py --task {args.task} --train_mode False --gui True")
                 if args.enable_obstacles and args.task == "unified":
                     print(f"   • Test without obstacles: python drl.py --task {args.task} --train_mode False --enable_obstacles False --gui True")
         else:
-            # Evaluation mode
             trainer.run_evaluation(args.load_model)
-            print(f"\n🎯 Evaluation completed!")
+            print(f"\nEvaluation completed!")
             
     except KeyboardInterrupt:
-        print(f"\n⚠️  Training/Evaluation interrupted by user")
+        print(f"\nTraining/Evaluation interrupted by user")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Error occurred: {e}")
+        print(f"\nError occurred: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
