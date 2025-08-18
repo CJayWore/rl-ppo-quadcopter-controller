@@ -104,7 +104,7 @@ class DRLAviary(BaseRLAviary):
         else:
             print("🔇 Noise-free environment initialized")
 
-                # Camera settings
+        # Camera settings
         self.camera_follow_enabled = True
         self.camera_mode = "chase" # "follow", "chase", "orbit", "target_center", "target_orbit"
         self.camera_distance = 4.0
@@ -147,18 +147,15 @@ class DRLAviary(BaseRLAviary):
             # 如果是 (obs_dim,) 的形状
             original_obs_dim = original_obs_space.shape[0]
         
-        # 添加的观察维度
-        num_lidar_rays = 12          # 12个方向的激光雷达
-        target_info_world = 3        # 世界坐标系相对目标位置
-        target_info_body = 3         # 机体坐标系相对目标位置 - 新增
-        velocity_body = 3            # 机体坐标系速度 - 新增
-        distance_info = 1            # 距离信息 - 新增
-        angle_info = 3               # 角度信息 (angle + sin + cos) - 新增
+        num_lidar_rays = 12   
+        target_info_world = 3
+        target_info_body = 3
+        velocity_body = 3
+        distance_info = 1
+        angle_info = 3
         
-        # 🔧 更新总维度
         new_obs_dim = original_obs_dim + num_lidar_rays + target_info_world + target_info_body + velocity_body + distance_info + angle_info
         
-        # 重新定义观察空间
         self.observation_space = spaces.Box(
             low=-np.inf, 
             high=np.inf, 
@@ -173,12 +170,11 @@ class DRLAviary(BaseRLAviary):
     def _setup_noise_manager(self):
         """根据噪声级别创建噪声管理器"""
         def get_training_progress():
-            # 简单的训练进度估算
             return min(1.0, self.total_episodes / 1000.0)
         
         manager = GaussianNoiseManager(
             training_progress_callback=get_training_progress,
-            random_seed=None  # 使用随机种子以保证训练多样性
+            random_seed=None
         )
         
         # 设置UI显示（如果支持）
@@ -620,10 +616,16 @@ class DRLAviary(BaseRLAviary):
         self.last_camera_pitch = smooth_pitch
 
     def _orbitCamera(self, drone_pos):
-        """环绕相机（围绕无人机旋转）- 平滑版本"""
-        # 基于时间的环绕角度
-        orbit_speed = 0.2  # 环绕速度
-        target_orbit_angle = (self.step_counter * orbit_speed) % 360
+        """环绕相机（围绕无人机旋转）- 修复版本"""
+        # 🔧 修复：使用累加角度而不是取模，避免角度跳跃问题
+        orbit_speed = 0.5  # 环绕速度（稍微加快）
+        
+        # 初始化累积角度
+        if not hasattr(self, 'orbit_accumulated_angle'):
+            self.orbit_accumulated_angle = self.last_camera_yaw if self.last_camera_yaw is not None else 0
+        
+        # 直接累加角度，不使用取模
+        self.orbit_accumulated_angle += orbit_speed
         
         # 🔧 动态相机距离调整 - 根据无人机高度和环境调整
         height = drone_pos[2]
@@ -639,8 +641,8 @@ class DRLAviary(BaseRLAviary):
         
         target_camera_target = drone_pos + np.array([0, 0, 0.5])
         
-        # 角度平滑处理（环绕）
-        smooth_yaw = self._smooth_angle_interpolate(self.last_camera_yaw, target_orbit_angle)
+        # 🔧 修复：直接使用累积角度，不进行角度插值
+        current_yaw = self.orbit_accumulated_angle
         smooth_pitch = self._smooth_interpolate_scalar(self.last_camera_pitch, target_pitch)
         
         # 目标位置平滑处理
@@ -652,7 +654,7 @@ class DRLAviary(BaseRLAviary):
         # 应用相机设置
         p.resetDebugVisualizerCamera(
             cameraDistance=dynamic_distance,
-            cameraYaw=smooth_yaw,
+            cameraYaw=current_yaw,
             cameraPitch=smooth_pitch,
             cameraTargetPosition=smooth_camera_target,
             physicsClientId=self.CLIENT
@@ -660,7 +662,7 @@ class DRLAviary(BaseRLAviary):
         
         # 更新历史值
         self.last_camera_target = smooth_camera_target
-        self.last_camera_yaw = smooth_yaw
+        self.last_camera_yaw = current_yaw  # 使用当前累积角度
         self.last_camera_pitch = smooth_pitch
 
     def _targetCenterCamera(self, drone_pos):
@@ -709,10 +711,16 @@ class DRLAviary(BaseRLAviary):
         self.last_camera_pitch = smooth_pitch
 
     def _targetOrbitCamera(self, drone_pos):
-        """环绕目标点旋转相机 - 平滑版本"""
-        # 基于时间的环绕角度
-        orbit_speed = 0.3  # 环绕速度
-        target_orbit_angle = (self.step_counter * orbit_speed) % 360
+        """环绕目标点旋转相机 - 修复版本"""
+        # 🔧 修复：使用累加角度而不是取模，避免角度跳跃问题
+        orbit_speed = 0.5  # 环绕速度
+        
+        # 初始化累积角度
+        if not hasattr(self, 'target_orbit_accumulated_angle'):
+            self.target_orbit_accumulated_angle = self.last_camera_yaw if self.last_camera_yaw is not None else 0
+        
+        # 直接累加角度，不使用取模
+        self.target_orbit_accumulated_angle += orbit_speed
         
         # 计算相机距离（基于无人机到目标点的距离动态调整）
         drone_to_target_distance = np.linalg.norm(drone_pos - self.TARGET_POS)
@@ -723,8 +731,8 @@ class DRLAviary(BaseRLAviary):
         
         target_camera_target = self.TARGET_POS  # 相机始终看向目标点
         
-        # 角度平滑处理（环绕）
-        smooth_yaw = self._smooth_angle_interpolate(self.last_camera_yaw, target_orbit_angle)
+        # 🔧 修复：直接使用累积角度，不进行角度插值
+        current_yaw = self.target_orbit_accumulated_angle
         smooth_pitch = self._smooth_interpolate_scalar(self.last_camera_pitch, target_pitch)
         
         # 目标位置平滑处理
@@ -736,7 +744,7 @@ class DRLAviary(BaseRLAviary):
         # 应用相机设置
         p.resetDebugVisualizerCamera(
             cameraDistance=camera_distance,
-            cameraYaw=smooth_yaw,
+            cameraYaw=current_yaw,
             cameraPitch=smooth_pitch,
             cameraTargetPosition=smooth_camera_target,
             physicsClientId=self.CLIENT
@@ -744,7 +752,7 @@ class DRLAviary(BaseRLAviary):
         
         # 更新历史值
         self.last_camera_target = smooth_camera_target
-        self.last_camera_yaw = smooth_yaw
+        self.last_camera_yaw = current_yaw
         self.last_camera_pitch = smooth_pitch
 
     def toggle_camera_mode(self):
@@ -761,17 +769,6 @@ class DRLAviary(BaseRLAviary):
 
     #########################################################################
     # Reward functions
-
-    '''
-
-    Gaussian Noise Integration:
-        ✅ 添加高斯noise扰动 - 已完成集成
-        ✅ 支持传感器噪声、风扰动、动作噪声、观测噪声
-        ✅ 支持训练/评估模式切换
-        ✅ 支持PyBullet UI显示
-        ✅ 支持自适应噪声衰减
-
-    '''
     def _navigationReward(self):
         state = self._getDroneStateVector(0)
         current_pos = state[0:3]

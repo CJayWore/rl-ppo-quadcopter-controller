@@ -67,30 +67,31 @@ class DSLPIDControl(BaseControl):
             exit()
 
 
-        ## PID for position control
-        self.P_COEFF_FOR = np.array([
-            0.13425130517747808,
-            0.21970179415297264,
-            0.6992132027132545])
-        self.I_COEFF_FOR = np.array([
-            0.059454514759577935,
-            0.021267577724038977,
-            0.07245657965803995])
-        self.D_COEFF_FOR = np.array([0.6906296314804994,
-      0.6898741932285878,
-      0.18349636254075863])
-        ## PID for attitude control
-        self.P_COEFF_TOR = np.array([34004.21096962188,
-      34055.67838471999,
-      24665.3606119943])
-        self.I_COEFF_TOR = np.array([12.259659072304792,
-      3.740302369884003,
-      108.3393015773789])
-        self.D_COEFF_TOR = np.array([5082.237145529126,
-      6840.5271157018105,
-      5136.162199644268])
+        ## PID for position control - Conservative hovering parameters
+        self.P_COEFF_FOR = np.array([0.4, 0.4, 0.6])
+        self.I_COEFF_FOR = np.array([0.05, 0.05, 0.1])
+        self.D_COEFF_FOR = np.array([0.2, 0.2, 0.3])
+        
+        ## PID for attitude control - Conservative hovering parameters
+        self.P_COEFF_TOR = np.array([8000, 8000, 6000])
+        self.I_COEFF_TOR = np.array([1.0, 1.0, 5.0])
+        self.D_COEFF_TOR = np.array([800, 800, 600])
 
         ## Pulse Width Modulation (PWM) to RPM conversion parameters
+        self.PWM2RPM_SCALE = 0.2685
+        self.PWM2RPM_CONST = 4070.3
+        self.MIN_PWM = 20000
+        self.MAX_PWM = 65535
+
+        ## Safety parameters for preventing flip-over
+        self.MAX_TILT_ANGLE = np.pi/6  # 30 degrees maximum tilt
+        self.MAX_MOTOR_OUTPUT_FRACTION = 0.85  # Limit motor output to 85%
+        self.STARTUP_DURATION = 2.0  # Gradual startup over 2 seconds
+        self.SAFE_MAX_PWM = int(self.MAX_PWM * self.MAX_MOTOR_OUTPUT_FRACTION)
+        
+        # Startup tracking
+        self.startup_timer = 0.0
+        self.is_startup_complete = False
         self.PWM2RPM_SCALE = 0.2685
         self.PWM2RPM_CONST = 4070.3
         self.MIN_PWM = 20000
@@ -128,6 +129,78 @@ class DSLPIDControl(BaseControl):
         self.integral_pos_e = np.zeros(3)
         self.last_rpy_e = np.zeros(3)
         self.integral_rpy_e = np.zeros(3)
+        #### Reset safety parameters ###############################
+        self.startup_timer = 0.0
+        self.is_startup_complete = False
+
+    ################################################################################
+    
+    def _limitTiltAngles(self, target_thrust, max_tilt=None):
+        """Limit the tilt angles by constraining the thrust vector.
+        
+        Parameters
+        ----------
+        target_thrust : ndarray
+            (3,1) array of target thrust components [x, y, z]
+        max_tilt : float, optional
+            Maximum tilt angle in radians. Uses self.MAX_TILT_ANGLE if None.
+            
+        Returns
+        -------
+        ndarray
+            (3,1) array of limited thrust components
+        """
+        if max_tilt is None:
+            max_tilt = self.MAX_TILT_ANGLE
+            
+        # Calculate current tilt angle
+        thrust_norm = np.linalg.norm(target_thrust)
+        if thrust_norm < 1e-6:
+            return target_thrust
+            
+        # Get tilt angle (angle from vertical)
+        vertical_component = target_thrust[2]
+        horizontal_norm = np.linalg.norm(target_thrust[0:2])
+        current_tilt = np.arctan2(horizontal_norm, abs(vertical_component))
+        
+        # If within limits, return unchanged
+        if current_tilt <= max_tilt:
+            return target_thrust
+            
+        # Limit the tilt angle
+        max_horizontal = abs(vertical_component) * np.tan(max_tilt)
+        scale_factor = max_horizontal / horizontal_norm if horizontal_norm > 0 else 1.0
+        
+        limited_thrust = target_thrust.copy()
+        limited_thrust[0] *= scale_factor
+        limited_thrust[1] *= scale_factor
+        
+        return limited_thrust
+    
+    ################################################################################
+    
+    def _getStartupScale(self, control_timestep):
+        """Get scaling factor for gradual startup.
+        
+        Parameters
+        ----------
+        control_timestep : float
+            Time step for control update
+            
+        Returns
+        -------
+        float
+            Scaling factor between 0.1 and 1.0
+        """
+        self.startup_timer += control_timestep
+        
+        if self.startup_timer >= self.STARTUP_DURATION:
+            self.is_startup_complete = True
+            return 1.0
+        
+        # Gradual ramp from 0.1 to 1.0
+        progress = self.startup_timer / self.STARTUP_DURATION
+        return 0.1 + 0.9 * progress
 
     ################################################################################
     
@@ -243,9 +316,18 @@ class DSLPIDControl(BaseControl):
         ndarray
             (3,1)-shaped array of floats containing the current position error [ex, ey, ez] in meters.
         """
+        # Get startup scaling for gradual ramp-up
+        startup_scale = self._getStartupScale(control_timestep)
+        
         cur_rotation = np.array(p.getMatrixFromQuaternion(cur_quat)).reshape(3, 3)
         pos_e = target_pos - cur_pos
         vel_e = target_vel - cur_vel
+        
+        # Apply startup scaling to errors for gentle startup
+        if not self.is_startup_complete:
+            pos_e *= startup_scale
+            vel_e *= startup_scale
+        
         self.integral_pos_e = self.integral_pos_e + pos_e*control_timestep
         self.integral_pos_e = np.clip(self.integral_pos_e, -2., 2.)
         self.integral_pos_e[2] = np.clip(self.integral_pos_e[2], -0.15, .15)
@@ -253,9 +335,18 @@ class DSLPIDControl(BaseControl):
         target_thrust = np.multiply(self.P_COEFF_FOR, pos_e) \
                         + np.multiply(self.I_COEFF_FOR, self.integral_pos_e) \
                         + np.multiply(self.D_COEFF_FOR, vel_e) + np.array([0, 0, self.GRAVITY])
-        scalar_thrust = max(0., np.dot(target_thrust, cur_rotation[:,2]))
+        
+        #### 🛡️ Apply tilt angle limiting for safety ###############
+        limited_thrust = self._limitTiltAngles(target_thrust)
+        
+        # Additional startup limiting - more conservative during startup
+        if not self.is_startup_complete:
+            startup_max_tilt = self.MAX_TILT_ANGLE * 0.5  # 15 degrees during startup
+            limited_thrust = self._limitTiltAngles(limited_thrust, startup_max_tilt)
+        
+        scalar_thrust = max(0., np.dot(limited_thrust, cur_rotation[:,2]))
         thrust = (math.sqrt(scalar_thrust / (4*self.KF)) - self.PWM2RPM_CONST) / self.PWM2RPM_SCALE
-        target_z_ax = target_thrust / np.linalg.norm(target_thrust)
+        target_z_ax = limited_thrust / np.linalg.norm(limited_thrust)
         target_x_c = np.array([math.cos(target_rpy[2]), math.sin(target_rpy[2]), 0])
         target_y_ax = np.cross(target_z_ax, target_x_c) / np.linalg.norm(np.cross(target_z_ax, target_x_c))
         target_x_ax = np.cross(target_y_ax, target_z_ax)
@@ -264,7 +355,7 @@ class DSLPIDControl(BaseControl):
         target_euler = (Rotation.from_matrix(target_rotation)).as_euler('XYZ', degrees=False)
         if np.any(np.abs(target_euler) > math.pi):
             print("\n[ERROR] ctrl it", self.control_counter, "in Control._dslPIDPositionControl(), values outside range [-pi,pi]")
-        self.last_target_thrust = target_thrust
+        self.last_target_thrust = limited_thrust  # Store the limited thrust for debugging
         return thrust, target_euler, pos_e
     
     ################################################################################
@@ -316,9 +407,16 @@ class DSLPIDControl(BaseControl):
         target_torques = - np.multiply(self.P_COEFF_TOR, rot_e) \
                          + np.multiply(self.D_COEFF_TOR, rpy_rates_e) \
                          + np.multiply(self.I_COEFF_TOR, self.integral_rpy_e)
-        target_torques = np.clip(target_torques, -3200, 3200)
+        
+        # 🛡️ More conservative torque limiting during startup
+        max_torque = 2400 if not self.is_startup_complete else 3200
+        target_torques = np.clip(target_torques, -max_torque, max_torque)
+        
         pwm = thrust + np.dot(self.MIXER_MATRIX, target_torques)
-        pwm = np.clip(pwm, self.MIN_PWM, self.MAX_PWM)
+        
+        # 🛡️ Apply safe PWM limits to prevent motor over-saturation
+        pwm = np.clip(pwm, self.MIN_PWM, self.SAFE_MAX_PWM)
+        
         self.last_target_torques = target_torques
         return self.PWM2RPM_SCALE * pwm + self.PWM2RPM_CONST
     
@@ -363,3 +461,23 @@ class DSLPIDControl(BaseControl):
     def getLastThrustAndTorques(self):
         
         return getattr(self, 'last_target_thrust', np.zeros(3)), getattr(self, 'last_target_torques', np.zeros(3))
+    
+    ################################################################################
+    
+    def getSafetyStatus(self):
+        """Get current safety controller status.
+        
+        Returns
+        -------
+        dict
+            Dictionary containing controller status information
+        """
+        return {
+            'max_tilt_angle_deg': np.degrees(self.MAX_TILT_ANGLE),
+            'max_motor_output_pct': self.MAX_MOTOR_OUTPUT_FRACTION * 100,
+            'startup_progress_pct': min(100, (self.startup_timer / self.STARTUP_DURATION) * 100),
+            'is_startup_complete': self.is_startup_complete,
+            'safe_max_pwm': self.SAFE_MAX_PWM,
+            'startup_timer': self.startup_timer,
+            'startup_duration': self.STARTUP_DURATION
+        }

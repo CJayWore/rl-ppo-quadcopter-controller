@@ -357,6 +357,27 @@ class DronePerformanceLogger(Logger):
             # Calculate control energy as sum of squared RPM values
             control_energy = np.sum(np.sum(rpms**2, axis=1))
             self.metrics.control_energy.append(control_energy)
+            
+            # Calculate control smoothness for this episode based on RPM variations
+            # Smoothness = inverse of RPM change rate
+            if len(rpms) > 1:
+                # Calculate RPM differences between consecutive time steps
+                rpm_diffs = np.diff(rpms, axis=0)  # Shape: (episode_length-1, 4)
+                # Calculate RMS of RPM changes (lower = smoother)
+                rms_rpm_change = np.sqrt(np.mean(rpm_diffs**2))
+                # Convert to smoothness score (0-1, higher = smoother)
+                episode_smoothness = 1.0 / (1.0 + rms_rpm_change / 1000.0)  # Normalize by typical RPM change
+                
+                # Store episode-level smoothness
+                if not hasattr(self.metrics, 'episode_control_smoothness'):
+                    self.metrics.episode_control_smoothness = []
+                self.metrics.episode_control_smoothness.append(episode_smoothness)
+                
+                print(f"   Episode control smoothness: {episode_smoothness:.4f} (RMS change: {rms_rpm_change:.2f})")
+            else:
+                print("   ⚠️  Not enough RPM data for smoothness calculation")
+        else:
+            print("   ⚠️  No RPM data available for control metrics")
         
         # Safety events
         if hasattr(self, 'current_safety_events'):
@@ -446,11 +467,42 @@ class DronePerformanceLogger(Logger):
         if len(self.metrics.response_times) > 0:
             self.metrics.settling_time = np.mean(self.metrics.response_times)
         
-        # Control smoothness
-        if len(self.metrics.control_energy) > 0:
+        # Control smoothness - Improved version using episode-level smoothness
+        print(f"🔧 Control Smoothness Debug:")
+        if hasattr(self.metrics, 'episode_control_smoothness') and len(self.metrics.episode_control_smoothness) > 0:
+            # Use the new episode-level smoothness data
+            episode_smoothness_values = self.metrics.episode_control_smoothness
+            self.metrics.control_smoothness = np.mean(episode_smoothness_values)
+            print(f"   Episode smoothness values: {episode_smoothness_values}")
+            print(f"   Average control_smoothness: {self.metrics.control_smoothness}")
+        elif len(self.metrics.control_energy) > 0:
+            # Fallback to energy-based calculation
             energy_values = np.array(self.metrics.control_energy)
+            print(f"   Using fallback energy-based calculation")
+            print(f"   Control energy count: {len(self.metrics.control_energy)}")
+            print(f"   Energy values: {energy_values}")
+            
             if len(energy_values) > 1:
-                self.metrics.control_smoothness = 1.0 / (1.0 + np.std(energy_values))
+                # Multiple episodes: use standard deviation for smoothness
+                std_energy = np.std(energy_values)
+                self.metrics.control_smoothness = 1.0 / (1.0 + std_energy / np.mean(energy_values))  # Normalize by mean
+                print(f"   Energy std: {std_energy}")
+                print(f"   Energy mean: {np.mean(energy_values)}")
+                print(f"   Computed control_smoothness (multi-episode): {self.metrics.control_smoothness}")
+            else:
+                # Single episode: use a different approach based on energy magnitude
+                single_energy = energy_values[0]
+                # Normalize based on typical energy ranges (lower energy = smoother control)
+                # Assume typical range: 0 to 1e10 (adjust based on your data)
+                typical_max_energy = 1e10
+                normalized_energy = min(1.0, single_energy / typical_max_energy)
+                self.metrics.control_smoothness = 1.0 - normalized_energy  # Invert: lower energy = higher smoothness
+                print(f"   Single energy value: {single_energy}")
+                print(f"   Normalized energy: {normalized_energy}")
+                print(f"   Computed control_smoothness (single-episode): {self.metrics.control_smoothness}")
+        else:
+            print("   ⚠️  No control data available")
+            self.metrics.control_smoothness = 0.0
     
     def evaluate_model(self, model_path: str, num_episodes: int = 10, 
                       model_name: str = None, duration_sec: int = None, gui_enabled: bool = False) -> Dict:
@@ -948,25 +1000,34 @@ class DronePerformanceLogger(Logger):
         ax9 = fig.add_subplot(gs[2, 2], projection='polar')
         
         # Prepare data for radar chart
-        metrics_names = ['Task Completion', 'Position Accuracy', 'Control Efficiency', 
+        metrics_names = ['Task Completion', 'Position Accuracy', 'Control Smoothness', 
                         'Attitude Stability', 'Response Speed', 'Robustness']
         
         # Normalize metrics to 0-1 scale
         metrics_values = []
         metrics_values.append(self.metrics.task_completion_rate)  # Task completion
         
+        # Position accuracy: Use inverse RMSE with better normalization
         if self.metrics.rmse_position > 0:
-            metrics_values.append(max(0, 1 - self.metrics.rmse_position))  # Position accuracy
+            # Use 1/(1+RMSE) for better normalization - always between 0 and 1
+            metrics_values.append(1.0 / (1.0 + self.metrics.rmse_position))  # Position accuracy
         else:
             metrics_values.append(1.0)
         
-        if len(self.metrics.control_energy) > 0:
-            # Normalize control efficiency (lower energy is better)
-            max_energy = max(self.metrics.control_energy) if self.metrics.control_energy else 1
-            avg_energy = np.mean(self.metrics.control_energy)
-            metrics_values.append(max(0, 1 - avg_energy / max_energy))
+        # Control smoothness: Use the computed control_smoothness metric
+        if self.metrics.control_smoothness > 0:
+            metrics_values.append(min(1.0, self.metrics.control_smoothness))  # Control smoothness
         else:
-            metrics_values.append(0.5)
+            # Fallback: use control energy if smoothness not available
+            if len(self.metrics.control_energy) > 0:
+                # Normalize control efficiency (lower energy is better)
+                max_energy = max(self.metrics.control_energy) if self.metrics.control_energy else 1
+                avg_energy = np.mean(self.metrics.control_energy)
+                # Use inverse normalization: 1/(1+normalized_energy)
+                normalized_energy = avg_energy / max_energy
+                metrics_values.append(1.0 / (1.0 + normalized_energy))
+            else:
+                metrics_values.append(0.5)
         
         if len(self.metrics.attitude_stability) > 0:
             avg_stability = np.mean(self.metrics.attitude_stability)
@@ -990,6 +1051,16 @@ class DronePerformanceLogger(Logger):
         angles += angles[:1]  # Complete the circle
         metrics_values += metrics_values[:1]  # Complete the circle
         
+        # Debug: Print radar chart values
+        print(f"🎯 Radar Chart Debug Info:")
+        for name, value in zip(metrics_names, metrics_values[:-1]):  # Exclude duplicate last value
+            print(f"   {name}: {value:.4f}")
+        print(f"   RMSE Position: {self.metrics.rmse_position:.4f}")
+        print(f"   Control Smoothness: {self.metrics.control_smoothness:.4f}")
+        print(f"   Control Energy Count: {len(self.metrics.control_energy)}")
+        if len(self.metrics.control_energy) > 0:
+            print(f"   Avg Control Energy: {np.mean(self.metrics.control_energy):.2f}")
+        
         ax9.plot(angles, metrics_values, 'o-', linewidth=2, color='blue')
         ax9.fill(angles, metrics_values, alpha=0.25, color='blue')
         ax9.set_xticks(angles[:-1])
@@ -1001,33 +1072,187 @@ class DronePerformanceLogger(Logger):
         plt.suptitle('Comprehensive Drone Performance Analysis', fontsize=16, fontweight='bold')
         
         if save_plots:
-            plot_file = os.path.join(self.performance_dir, "performance_analysis.png")
-            plt.savefig(plot_file, dpi=300, bbox_inches='tight')
-            print(f"Performance plots saved to: {plot_file}")
+            # Save individual plots only (no combined plot)
+            self._save_individual_performance_plots(ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9, 
+                                                  metrics_names, metrics_values, angles)
             
             # Generate individual trajectory plots
             self._generate_individual_trajectory_plots()
         
         plt.show()
     
+    def _save_individual_performance_plots(self, ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9, 
+                                         metrics_names, metrics_values, angles):
+        """
+        Save each performance plot as an individual image file.
+        """
+        print("Saving individual performance plots...")
+        
+        # 1. Position Error Time Series
+        if len(self.metrics.position_errors) > 0:
+            fig1 = plt.figure(figsize=(10, 6))
+            ax = fig1.add_subplot(111)
+            ax.plot(self.metrics.position_errors, 'b-', alpha=0.7, linewidth=1)
+            ax.axhline(y=self.target_tolerance, color='r', linestyle='--', label='Target Tolerance')
+            ax.set_title('Position Error Over Time', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Step')
+            ax.set_ylabel('Position Error (m)')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            fig1.savefig(os.path.join(self.performance_dir, "01_position_error_time_series.png"), 
+                        dpi=300, bbox_inches='tight')
+            plt.close(fig1)
+        
+        # 2. Error Distribution Histogram
+        if len(self.metrics.position_errors) > 0:
+            fig2 = plt.figure(figsize=(10, 6))
+            ax = fig2.add_subplot(111)
+            ax.hist(self.metrics.position_errors, bins=30, alpha=0.7, color='skyblue', edgecolor='black')
+            ax.axvline(x=np.mean(self.metrics.position_errors), color='r', linestyle='--', label='Mean')
+            ax.set_title('Position Error Distribution', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Position Error (m)')
+            ax.set_ylabel('Frequency')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            fig2.savefig(os.path.join(self.performance_dir, "02_error_distribution_histogram.png"), 
+                        dpi=300, bbox_inches='tight')
+            plt.close(fig2)
+        
+        # 3. Control Energy Over Episodes
+        if len(self.metrics.control_energy) > 0:
+            fig3 = plt.figure(figsize=(10, 6))
+            ax = fig3.add_subplot(111)
+            episodes = range(1, len(self.metrics.control_energy) + 1)
+            ax.plot(episodes, self.metrics.control_energy, 'go-', markersize=6)
+            ax.set_title('Control Energy per Episode', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Control Energy')
+            ax.grid(True, alpha=0.3)
+            fig3.savefig(os.path.join(self.performance_dir, "03_control_energy_episodes.png"), 
+                        dpi=300, bbox_inches='tight')
+            plt.close(fig3)
+        
+        # 4. Task Completion Analysis
+        fig4 = plt.figure(figsize=(10, 6))
+        ax = fig4.add_subplot(111)
+        if hasattr(self.metrics, 'episode_completion_rates') and len(self.metrics.episode_completion_rates) > 0:
+            episodes = range(1, len(self.metrics.episode_completion_rates) + 1)
+            ax.bar(episodes, self.metrics.episode_completion_rates, alpha=0.7, color='green')
+            ax.set_ylim(-0.1, 1.1)
+            overall_rate = np.mean(self.metrics.episode_completion_rates) * 100
+            ax.text(0.02, 0.98, f'Overall Rate: {overall_rate:.1f}%', 
+                    transform=ax.transAxes, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        else:
+            ax.text(0.5, 0.5, 'No Task Completion Data', 
+                    transform=ax.transAxes, ha='center', va='center', fontsize=12)
+        ax.set_title('Task Completion per Episode', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Episode')
+        ax.set_ylabel('Completed (1=Yes, 0=No)')
+        ax.grid(True, alpha=0.3)
+        fig4.savefig(os.path.join(self.performance_dir, "04_task_completion_analysis.png"), 
+                    dpi=300, bbox_inches='tight')
+        plt.close(fig4)
+        
+        # 5. Response Time Analysis
+        fig5 = plt.figure(figsize=(10, 6))
+        ax = fig5.add_subplot(111)
+        if len(self.metrics.response_times) > 0:
+            ax.boxplot(self.metrics.response_times, patch_artist=True, 
+                       boxprops=dict(facecolor='lightblue', alpha=0.7))
+            mean_response = np.mean(self.metrics.response_times)
+            std_response = np.std(self.metrics.response_times)
+            ax.text(0.02, 0.98, f'Mean: {mean_response:.2f}s\nStd: {std_response:.2f}s\nSamples: {len(self.metrics.response_times)}', 
+                    transform=ax.transAxes, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        else:
+            ax.text(0.5, 0.5, 'No Response Time Data', 
+                    transform=ax.transAxes, ha='center', va='center', fontsize=12)
+        ax.set_title('Response Time Distribution', fontsize=14, fontweight='bold')
+        ax.set_ylabel('Response Time (s)')
+        ax.grid(True, alpha=0.3)
+        fig5.savefig(os.path.join(self.performance_dir, "05_response_time_distribution.png"), 
+                    dpi=300, bbox_inches='tight')
+        plt.close(fig5)
+        
+        # 6. Attitude Stability
+        if len(self.metrics.attitude_stability) > 0:
+            fig6 = plt.figure(figsize=(10, 6))
+            ax = fig6.add_subplot(111)
+            episodes = range(1, len(self.metrics.attitude_stability) + 1)
+            ax.plot(episodes, self.metrics.attitude_stability, 'mo-', markersize=6)
+            ax.set_title('Attitude Stability per Episode', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Stability Score')
+            ax.grid(True, alpha=0.3)
+            fig6.savefig(os.path.join(self.performance_dir, "06_attitude_stability.png"), 
+                        dpi=300, bbox_inches='tight')
+            plt.close(fig6)
+        
+        # 7. Robustness Scores
+        if len(self.metrics.robustness_scores) > 0:
+            fig7 = plt.figure(figsize=(10, 6))
+            ax = fig7.add_subplot(111)
+            episodes = range(1, len(self.metrics.robustness_scores) + 1)
+            ax.plot(episodes, self.metrics.robustness_scores, 'co-', markersize=6)
+            ax.set_title('Robustness Scores per Episode', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Robustness Score')
+            ax.grid(True, alpha=0.3)
+            fig7.savefig(os.path.join(self.performance_dir, "07_robustness_scores.png"), 
+                        dpi=300, bbox_inches='tight')
+            plt.close(fig7)
+        
+        # 8. Safety Events Summary
+        fig8 = plt.figure(figsize=(10, 6))
+        ax = fig8.add_subplot(111)
+        safety_counts = [episode['safety_events_count'] for episode in self.episode_data]
+        if safety_counts:
+            episodes = range(1, len(safety_counts) + 1)
+            ax.bar(episodes, safety_counts, alpha=0.7, color='red')
+        ax.set_title('Safety Events per Episode', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Episode')
+        ax.set_ylabel('Number of Events')
+        ax.grid(True, alpha=0.3)
+        fig8.savefig(os.path.join(self.performance_dir, "08_safety_events_summary.png"), 
+                    dpi=300, bbox_inches='tight')
+        plt.close(fig8)
+        
+        # 9. Performance Summary Radar Chart
+        fig9 = plt.figure(figsize=(10, 10))
+        ax = fig9.add_subplot(111, projection='polar')
+        ax.plot(angles, metrics_values, 'o-', linewidth=2, color='blue')
+        ax.fill(angles, metrics_values, alpha=0.25, color='blue')
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(metrics_names)
+        ax.set_ylim(0, 1)
+        ax.set_title('Performance Summary', fontsize=14, fontweight='bold', y=1.08)
+        ax.grid(True)
+        fig9.savefig(os.path.join(self.performance_dir, "09_performance_summary_radar.png"), 
+                    dpi=300, bbox_inches='tight')
+        plt.close(fig9)
+        
+        print(f"✅ Saved 9 individual performance plots to: {self.performance_dir}")
+        print("   Files: 01_position_error_time_series.png → 09_performance_summary_radar.png")
+    
     def _generate_individual_trajectory_plots(self):
         """
-        Generate a single figure with 6 subplot panels showing individual 3D trajectory plots for each episode.
+        Generate a single figure with 9 subplot panels showing individual 3D trajectory plots for each episode.
         """
         if not self.episode_data or len(self.episode_data) == 0:
             print("No episode data available for individual trajectory plots")
             return
         
         # Define colors for different episodes
-        colors = ['blue', 'green', 'orange', 'purple', 'brown', 'pink']
+        colors = ['blue', 'green', 'orange', 'purple', 'brown', 'pink', 'red', 'cyan', 'magenta']
         
-        # Generate plots for first 6 episodes (or all available if less than 6)
-        num_episodes_to_plot = min(6, len(self.episode_data))
+        # Generate plots for first 9 episodes (or all available if less than 9)
+        num_episodes_to_plot = min(9, len(self.episode_data))
         
         print(f"Generating combined trajectory plots for {num_episodes_to_plot} episodes...")
         
-        # Create a figure with 2 rows and 3 columns of subplots
-        fig = plt.figure(figsize=(18, 12))
+        # Create a figure with 3 rows and 3 columns of subplots
+        fig = plt.figure(figsize=(18, 18))
         
         # Calculate global min/max ranges for consistent scaling across all subplots
         # Include both trajectory positions AND target positions
@@ -1069,8 +1294,8 @@ class DronePerformanceLogger(Logger):
             if len(positions) == 0:
                 continue
                 
-            # Create subplot (2 rows, 3 columns)
-            ax = fig.add_subplot(2, 3, episode_idx + 1, projection='3d')
+            # Create subplot (3 rows, 3 columns)
+            ax = fig.add_subplot(3, 3, episode_idx + 1, projection='3d')
             
             color = colors[episode_idx % len(colors)]
             
@@ -1122,7 +1347,7 @@ class DronePerformanceLogger(Logger):
         # Save the combined plot
         trajectory_file = os.path.join(self.performance_dir, "trajectories_combined.png")
         plt.savefig(trajectory_file, dpi=300, bbox_inches='tight')
-        print(f"Combined trajectory plots saved to: {trajectory_file}")
+        print(f"Combined 3×3 trajectory plots saved to: {trajectory_file}")
         
         # Close the figure to free memory
         plt.close(fig)

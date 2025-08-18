@@ -1,62 +1,367 @@
+#!/usr/bin/env python3
+"""
+PID参数自动调优器
+自动搜索最优PID参数，并将结果保存为best_pid_params.json
+"""
+
 import numpy as np
+import json
+import os
+import sys
+import time
+import argparse
+import shutil
+from datetime import datetime
+from scipy.optimize import differential_evolution, minimize
 import matplotlib.pyplot as plt
 import pandas as pd
-from scipy.optimize import differential_evolution, minimize
+
+# 添加当前目录到路径以便导入pid模块
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, current_dir)
+
+# 导入无人机仿真模块
 from pid import run
-import os
-import json
-from datetime import datetime
-import time
-import shutil
-import glob
+from gym_pybullet_drones.utils.enums import DroneModel
 
 class PIDTuner:
-    def __init__(self):
-        self.test_results = []
-        self.best_params = None
-        self.best_score = float('inf')
-        self.evaluation_count = 0
+    """PID参数调优器"""
+    
+    def __init__(self, task_type="hover", drone_model=DroneModel.CF2P, max_tilt_angle_deg=25, max_motor_output_pct=80):
+        """
+        初始化PID调优器
         
-        # PID参数的搜索范围
-        self.param_bounds = {
-            'pos_p': [(0.1, 1.0), (0.1, 1.0), (0.5, 2.5)],  # [x, y, z]
-            'pos_i': [(0.001, 0.2), (0.001, 0.2), (0.001, 0.2)],
-            'pos_d': [(0.05, 0.8), (0.05, 0.8), (0.1, 1.5)],
-            'att_p': [(10000, 50000), (10000, 50000), (8000, 40000)],
-            'att_i': [(0, 20), (0, 20), (50, 500)], 
-            'att_d': [(2000, 15000), (2000, 15000), (1500, 10000)]
-        }
+        Parameters:
+        task_type: str - 任务类型 ('hover', 'tracking', 'aggressive')
+        drone_model: DroneModel - 无人机类型
+        max_tilt_angle_deg: float - 最大倾角限制（度）
+        max_motor_output_pct: float - 最大电机输出百分比
+        """
+        self.task_type = task_type
+        self.drone_model = drone_model
+        self.max_tilt_angle_deg = max_tilt_angle_deg
+        self.max_motor_output_pct = max_motor_output_pct
+        self.evaluation_count = 0
+        self.best_score = float('inf')
+        self.best_params = None
+        self.evaluation_history = []
+        
+        # 设置搜索空间
+        self._setup_search_bounds()
+        
+        # 设置优化权重
+        self._setup_optimization_weights()
+        
+        print(f"🎯 PIDTuner initialized for {task_type} task")
+        print(f"🛡️ Safety limits: max_tilt={max_tilt_angle_deg}°, max_motor={max_motor_output_pct}%")
+        
+    def _setup_search_bounds(self):
+        """根据任务类型设置合理的搜索边界"""
+        
+        if self.task_type == "hover":
+            # 悬停任务：稳定性优先，保守参数范围
+            self.param_bounds = {
+                'pos_p': [(0.2, 0.8), (0.2, 0.8), (0.4, 1.0)],
+                'pos_i': [(0.01, 0.15), (0.01, 0.15), (0.05, 0.2)],
+                'pos_d': [(0.1, 0.5), (0.1, 0.5), (0.15, 0.6)],
+                'att_p': [(5000, 15000), (5000, 15000), (4000, 12000)],
+                'att_i': [(0.5, 8.0), (0.5, 8.0), (2.0, 15.0)],
+                'att_d': [(400, 1500), (400, 1500), (300, 1200)]
+            }
+        elif self.task_type == "tracking":
+            # 轨迹跟踪：响应性和精度并重
+            self.param_bounds = {
+                'pos_p': [(0.4, 1.2), (0.4, 1.2), (0.6, 1.4)],
+                'pos_i': [(0.02, 0.2), (0.02, 0.2), (0.08, 0.25)],
+                'pos_d': [(0.2, 0.8), (0.2, 0.8), (0.25, 0.9)],
+                'att_p': [(7000, 20000), (7000, 20000), (6000, 18000)],
+                'att_i': [(1.0, 12.0), (1.0, 12.0), (3.0, 20.0)],
+                'att_d': [(600, 2000), (600, 2000), (500, 1800)]
+            }
+        elif self.task_type == "aggressive":
+            # 激进任务：响应速度优先
+            self.param_bounds = {
+                'pos_p': [(0.6, 1.5), (0.6, 1.5), (0.8, 1.8)],
+                'pos_i': [(0.05, 0.3), (0.05, 0.3), (0.1, 0.4)],
+                'pos_d': [(0.3, 1.0), (0.3, 1.0), (0.4, 1.2)],
+                'att_p': [(10000, 30000), (10000, 30000), (8000, 25000)],
+                'att_i': [(2.0, 20.0), (2.0, 20.0), (5.0, 30.0)],
+                'att_d': [(800, 2500), (800, 2500), (700, 2200)]
+            }
+        else:
+            # 默认使用悬停参数
+            self.task_type = "hover"
+            self._setup_search_bounds()
+    
+    def _setup_optimization_weights(self):
+        """设置多目标优化权重"""
+        if self.task_type == "hover":
+            self.weights = {
+                'stability': 0.4,
+                'tracking_error': 0.3, 
+                'overshoot': 0.2,
+                'energy_efficiency': 0.1
+            }
+        elif self.task_type == "tracking":
+            self.weights = {
+                'stability': 0.25,
+                'tracking_error': 0.35,
+                'overshoot': 0.2,
+                'energy_efficiency': 0.2
+            }
+        elif self.task_type == "aggressive":
+            self.weights = {
+                'stability': 0.2,
+                'tracking_error': 0.3,
+                'overshoot': 0.15,
+                'energy_efficiency': 0.35
+            }
     
     def objective_function(self, x):
-        """优化目标函数"""
+        """
+        目标函数：评估PID参数的性能
+        
+        Parameters:
+        x: array - PID参数向量 [pos_p(3), pos_i(3), pos_d(3), att_p(3), att_i(3), att_d(3)]
+        
+        Returns:
+        float - 性能评分（越小越好）
+        """
         try:
-            # 将参数向量转换为参数字典
+            # 将向量转换为参数字典
             params = self._vector_to_params(x)
             
-            # 评估参数性能
-            score = self._run_and_evaluate(params, trajectory="circle", duration=6)
+            # 运行仿真测试
+            score, detailed_scores = self._run_simulation_test(params)
             
             self.evaluation_count += 1
-            print(f"Evaluation {self.evaluation_count}: Score = {score:.4f}")
             
-            # 记录结果
+            # 记录评估历史
+            self.evaluation_history.append({
+                'evaluation': self.evaluation_count,
+                'params': params,
+                'score': score,
+                'detailed_scores': detailed_scores,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+            print(f"Evaluation {self.evaluation_count}: Score = {score:.4f}")
+            print(f"  Details: {detailed_scores}")
+            
+            # 更新最佳结果
             if score < self.best_score and np.isfinite(score):
                 self.best_score = score
-                self.best_params = params
-                print(f"🎯 New best score: {score:.4f}")
+                self.best_params = params.copy()
+                print(f"🏆 New best score: {score:.4f}")
+                
+                # 实时保存最佳参数
+                self._save_best_params_to_json()
             
             return score
             
         except Exception as e:
-            print(f"❌ Objective function error: {e}")
+            print(f"❌ Evaluation error: {e}")
             return float('inf')
     
+    def _run_simulation_test(self, params):
+        """
+        运行仿真测试并评估性能
+        
+        Parameters:
+        params: dict - PID参数字典
+        
+        Returns:
+        tuple: (总分, 详细分数字典)
+        """
+        try:
+            # 创建临时输出文件夹
+            temp_folder = f"temp_tuning_{int(time.time() * 1000000)}"
+            
+            # 运行仿真
+            run(
+                duration_sec=8,  # 短时间测试以加快调优速度
+                output_folder=temp_folder,
+                gui=False,
+                plot=False,
+                custom_pid_params=params,
+                randomize_positions=True,
+                drone=self.drone_model,
+                max_tilt_angle_deg=self.max_tilt_angle_deg,
+                max_motor_output_pct=self.max_motor_output_pct
+            )
+            
+            # 分析结果
+            total_score, detailed_scores = self._analyze_performance(temp_folder)
+            
+            # 清理临时文件
+            self._cleanup_temp_folder(temp_folder)
+            
+            return total_score, detailed_scores
+            
+        except Exception as e:
+            print(f"❌ Simulation test failed: {e}")
+            return float('inf'), {}
+    
+    def _analyze_performance(self, log_folder):
+        """
+        分析仿真结果性能
+        
+        Parameters:
+        log_folder: str - 日志文件夹路径
+        
+        Returns:
+        tuple: (总分, 详细分数字典)
+        """
+        try:
+            # 查找CSV数据文件夹
+            csv_folders = [f for f in os.listdir(log_folder) if f.startswith('save-flight-pid-')]
+            
+            if not csv_folders:
+                return float('inf'), {}
+            
+            csv_folder = os.path.join(log_folder, csv_folders[0])
+            
+            # 加载仿真数据
+            data = self._load_csv_data(csv_folder)
+            
+            if data is None or len(data) < 50:
+                return float('inf'), {}
+            
+            # 计算各项性能指标
+            scores = {}
+            
+            # 1. 稳定性评估（位置方差）
+            scores['stability'] = self._evaluate_stability(data)
+            
+            # 2. 跟踪误差评估
+            scores['tracking_error'] = self._evaluate_tracking_error(data)
+            
+            # 3. 超调量评估
+            scores['overshoot'] = self._evaluate_overshoot(data)
+            
+            # 4. 能效评估
+            scores['energy_efficiency'] = self._evaluate_energy_efficiency(data)
+            
+            # 计算加权总分
+            total_score = sum(self.weights[key] * scores[key] for key in scores.keys())
+            
+            return total_score, scores
+            
+        except Exception as e:
+            print(f"❌ Performance analysis failed: {e}")
+            return float('inf'), {}
+    
+    def _load_csv_data(self, csv_folder):
+        """加载CSV仿真数据"""
+        try:
+            data = {}
+            required_files = ['x0.csv', 'y0.csv', 'z0.csv', 'vx0.csv', 'vy0.csv', 'vz0.csv']
+            
+            for file in required_files:
+                file_path = os.path.join(csv_folder, file)
+                if os.path.exists(file_path):
+                    df = pd.read_csv(file_path, header=None)
+                    key = file.replace('0.csv', '')
+                    data[key] = df.iloc[:, 1].values  # 第二列是数据值
+            
+            if len(data) < 6:  # 确保有基本的位置和速度数据
+                return None
+                
+            return pd.DataFrame(data)
+            
+        except Exception as e:
+            print(f"❌ Failed to load CSV data: {e}")
+            return None
+    
+    def _evaluate_stability(self, data):
+        """评估系统稳定性"""
+        try:
+            # 使用最后30%的数据评估稳定性
+            stable_region = data.iloc[-int(len(data)*0.3):]
+            
+            # 计算位置方差（越小越稳定）
+            pos_variance = np.var(stable_region[['x', 'y', 'z']].values, axis=0).mean()
+            
+            # 计算速度方差（越小越稳定）
+            vel_variance = np.var(stable_region[['vx', 'vy', 'vz']].values, axis=0).mean()
+            
+            # 归一化评分
+            stability_score = np.tanh(pos_variance * 50 + vel_variance * 5)
+            
+            return stability_score
+            
+        except:
+            return 1.0  # 最差评分
+    
+    def _evaluate_tracking_error(self, data):
+        """评估跟踪误差"""
+        try:
+            # 假设目标位置是最终收敛位置
+            target_pos = data[['x', 'y', 'z']].iloc[-10:].mean().values
+            
+            # 计算整体跟踪误差
+            positions = data[['x', 'y', 'z']].values
+            errors = np.linalg.norm(positions - target_pos, axis=1)
+            mean_error = np.mean(errors)
+            
+            # 归一化评分
+            error_score = np.tanh(mean_error * 5)
+            
+            return error_score
+            
+        except:
+            return 1.0
+    
+    def _evaluate_overshoot(self, data):
+        """评估超调量"""
+        try:
+            # 简化评估：使用Z轴位置变化
+            z_positions = data['z'].values
+            target_z = z_positions[-10:].mean()
+            
+            # 计算最大超调
+            max_overshoot = np.max(np.abs(z_positions - target_z))
+            
+            # 归一化评分
+            overshoot_score = np.tanh(max_overshoot * 2)
+            
+            return overshoot_score
+            
+        except:
+            return 1.0
+    
+    def _evaluate_energy_efficiency(self, data):
+        """评估能源效率"""
+        try:
+            # 使用速度变化率作为能耗指标
+            velocities = data[['vx', 'vy', 'vz']].values
+            
+            # 计算速度变化的总量
+            vel_changes = np.diff(velocities, axis=0)
+            energy_metric = np.mean(np.sum(np.abs(vel_changes), axis=1))
+            
+            # 归一化评分
+            energy_score = np.tanh(energy_metric * 0.5)
+            
+            return energy_score
+            
+        except:
+            return 0.5  # 中等评分
+    
+    def _cleanup_temp_folder(self, folder_path):
+        """清理临时文件夹"""
+        try:
+            if os.path.exists(folder_path):
+                shutil.rmtree(folder_path)
+        except:
+            pass  # 忽略清理错误
+    
     def _vector_to_params(self, x):
-        """将优化向量转换为PID参数字典"""
+        """将优化向量转换为参数字典"""
         return {
-            'name': f'Optimized_{self.evaluation_count}',
+            'name': f'Tuned_{self.task_type}_{self.evaluation_count}',
             'pos_p': [x[0], x[1], x[2]],
-            'pos_i': [x[3], x[4], x[5]],
+            'pos_i': [x[3], x[4], x[5]], 
             'pos_d': [x[6], x[7], x[8]],
             'att_p': [x[9], x[10], x[11]],
             'att_i': [x[12], x[13], x[14]],
@@ -64,411 +369,258 @@ class PIDTuner:
         }
     
     def _params_to_vector(self, params):
-        """将PID参数字典转换为优化向量"""
+        """将参数字典转换为优化向量"""
         return np.array([
             *params['pos_p'], *params['pos_i'], *params['pos_d'],
             *params['att_p'], *params['att_i'], *params['att_d']
         ])
     
-    def _get_bounds_vector(self):
-        """获取所有参数的边界"""
+    def _get_bounds_list(self):
+        """获取搜索边界列表"""
         bounds = []
         for key in ['pos_p', 'pos_i', 'pos_d', 'att_p', 'att_i', 'att_d']:
             bounds.extend(self.param_bounds[key])
         return bounds
     
-    def _run_and_evaluate(self, params, trajectory, duration):
-        """运行仿真并评估性能"""
-        try:
-            # 创建唯一的临时文件夹
-            temp_folder = f"temp_results_{int(time.time() * 1000000)}"
-            
-            # 确保文件夹不存在
-            while os.path.exists(temp_folder):
-                temp_folder = f"temp_results_{int(time.time() * 1000000)}"
-                time.sleep(0.001)
-            
-            print(f"📁 Running simulation in: {temp_folder}")
-            
-            # 运行仿真
-            run(
-                trajectory=trajectory,
-                duration_sec=duration,
-                output_folder=temp_folder,
-                gui=False,
-                plot=False,
-                custom_pid_params=params
-            )
-            
-            # 计算性能分数
-            score = self._calculate_performance_score(temp_folder)
-            self._cleanup_temp_files(temp_folder)
-            
-            return score
-            
-        except Exception as e:
-            print(f"❌ Evaluation failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return float('inf')
-    
-    def _calculate_performance_score(self, log_folder):
-        """计算性能分数 - 根据Logger的实际保存格式"""
-        try:
-            print(f"📁 Analyzing log folder: {log_folder}")
-            
-            # 检查文件夹是否存在
-            if not os.path.exists(log_folder):
-                print(f"❌ Log folder does not exist: {log_folder}")
-                return float('inf')
-            
-            # 列出文件夹中的所有文件
-            files = os.listdir(log_folder)
-            print(f"📁 Files in {log_folder}: {files}")
-            
-            # 查找CSV文件夹（由save_as_csv创建）
-            csv_folders = [f for f in files if f.startswith('save-flight-pid-')]
-            if csv_folders:
-                # 使用最新的CSV文件夹
-                csv_folder = os.path.join(log_folder, csv_folders[-1])
-                print(f"📊 Found CSV folder: {csv_folder}")
-                return self._calculate_score_from_csv_folder(csv_folder)
-            
-            # 查找NPY文件（由save创建）
-            npy_files = [f for f in files if f.endswith('.npz')]
-            if npy_files:
-                npy_file = os.path.join(log_folder, npy_files[-1])
-                print(f"📊 Found NPY file: {npy_file}")
-                return self._calculate_score_from_npy(npy_file)
-            
-            print(f"❌ No valid log files found in {log_folder}")
-            return float('inf')
-            
-        except Exception as e:
-            print(f"❌ Score calculation failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return float('inf')
-    
-    def _calculate_score_from_csv_folder(self, csv_folder):
-        """从CSV文件夹计算性能分数"""
-        try:
-            # 读取位置数据 (x0.csv, y0.csv, z0.csv)
-            x_file = os.path.join(csv_folder, "x0.csv")
-            y_file = os.path.join(csv_folder, "y0.csv")
-            z_file = os.path.join(csv_folder, "z0.csv")
-            
-            if not all(os.path.exists(f) for f in [x_file, y_file, z_file]):
-                print(f"❌ Missing position CSV files in {csv_folder}")
-                return float('inf')
-            
-            # 读取位置数据
-            x_data = pd.read_csv(x_file, header=None).values
-            y_data = pd.read_csv(y_file, header=None).values
-            z_data = pd.read_csv(z_file, header=None).values
-            
-            # 提取时间和位置
-            t = x_data[:, 0]  # 时间
-            pos_x = x_data[:, 1]  # x位置
-            pos_y = y_data[:, 1]  # y位置
-            pos_z = z_data[:, 1]  # z位置
-            
-            # 计算圆形轨迹的目标位置
-            R = 0.3  # 半径
-            PERIOD = 10  # 周期
-            target_x = R * np.cos(2 * np.pi * t / PERIOD)
-            target_y = R * np.sin(2 * np.pi * t / PERIOD) - R
-            target_z = np.ones_like(t) * 0.1  # 目标高度
-            
-            # 计算位置误差
-            pos_error = np.sqrt(
-                (pos_x - target_x)**2 +
-                (pos_y - target_y)**2 +
-                (pos_z - target_z)**2
-            )
-            
-            # 过滤无效值
-            pos_error = pos_error[np.isfinite(pos_error)]
-            
-            if len(pos_error) == 0:
-                print("❌ No valid position error data")
-                return float('inf')
-            
-            # 计算性能指标
-            avg_error = pos_error.mean()
-            max_error = pos_error.max()
-            std_error = pos_error.std()
-            
-            # 稳态误差（最后20%的数据）
-            steady_start = int(len(pos_error) * 0.8)
-            steady_error = pos_error[steady_start:].mean() if steady_start < len(pos_error) else avg_error
-            
-            # 综合得分
-            score = (0.4 * avg_error + 
-                    0.3 * max_error + 
-                    0.2 * std_error + 
-                    0.1 * steady_error)
-            
-            print(f"Performance - Avg: {avg_error:.4f}, Max: {max_error:.4f}, Std: {std_error:.4f}, Steady: {steady_error:.4f}")
-            print(f"Final Score: {score:.4f}")
-            
-            return score if np.isfinite(score) else float('inf')
-            
-        except Exception as e:
-            print(f"❌ CSV folder score calculation failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return float('inf')
-    
-    def _calculate_score_from_npy(self, npy_file):
-        """从NPY文件计算性能分数"""
-        try:
-            # 加载NPY数据
-            data = np.load(npy_file)
-            timestamps = data['timestamps'][0]  # 第一个无人机的时间戳
-            states = data['states'][0]  # 第一个无人机的状态 [16, N]
-            controls = data['controls'][0]  # 第一个无人机的控制目标 [12, N]
-            
-            # 获取实际数据长度
-            valid_length = int(np.count_nonzero(timestamps))
-            
-            # 提取位置数据
-            pos_x = states[0, :valid_length]  # x位置
-            pos_y = states[1, :valid_length]  # y位置
-            pos_z = states[2, :valid_length]  # z位置
-            
-            # 提取控制目标位置
-            target_x = controls[0, :valid_length]
-            target_y = controls[1, :valid_length]
-            target_z = controls[2, :valid_length]
-            
-            # 计算位置误差
-            pos_error = np.sqrt(
-                (pos_x - target_x)**2 +
-                (pos_y - target_y)**2 +
-                (pos_z - target_z)**2
-            )
-            
-            # 过滤无效值
-            pos_error = pos_error[np.isfinite(pos_error)]
-            
-            if len(pos_error) == 0:
-                print("❌ No valid position error data")
-                return float('inf')
-            
-            # 计算性能指标
-            avg_error = pos_error.mean()
-            max_error = pos_error.max()
-            std_error = pos_error.std()
-            
-            # 稳态误差（最后20%的数据）
-            steady_start = int(len(pos_error) * 0.8)
-            steady_error = pos_error[steady_start:].mean() if steady_start < len(pos_error) else avg_error
-            
-            # 综合得分
-            score = (0.4 * avg_error + 
-                    0.3 * max_error + 
-                    0.2 * std_error + 
-                    0.1 * steady_error)
-            
-            print(f"📊 Performance - Avg: {avg_error:.4f}, Max: {max_error:.4f}, Std: {std_error:.4f}, Steady: {steady_error:.4f}")
-            print(f"📊 Final Score: {score:.4f}")
-            
-            return score if np.isfinite(score) else float('inf')
-            
-        except Exception as e:
-            print(f"❌ NPY score calculation failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return float('inf')
-    
-    def _cleanup_temp_files(self, folder):
-        """清理临时文件"""
-        try:
-            if os.path.exists(folder):
-                shutil.rmtree(folder)
-                print(f"🧹 Cleaned up: {folder}")
-        except Exception as e:
-            print(f"⚠️ Cleanup failed for {folder}: {e}")
-    
-    def optimize_genetic_algorithm(self, max_evaluations=500, population_size=6):
-        """遗传算法优化（减少评估次数以加快速度）"""
-        print("Genetic Algorithm optimization")
-        print(f"Max evaluations: {max_evaluations}")
-        print(f"Population size: {population_size}")
+    def optimize_differential_evolution(self, max_evaluations=1000, population_size=10):
+        """使用差分进化算法优化"""
+        print(f"🚀 Starting Differential Evolution optimization")
+        print(f"📊 Max evaluations: {max_evaluations}")
+        print(f"👥 Population size: {population_size}")
         
-        bounds = self._get_bounds_vector()
+        bounds = self._get_bounds_list()
         
         # 重置计数器
         self.evaluation_count = 0
         self.best_score = float('inf')
         self.best_params = None
-        
-        result = differential_evolution(
-            func=self.objective_function,
-            bounds=bounds,
-            maxiter=max_evaluations // population_size,
-            popsize=population_size,
-            seed=13,
-            disp=True,
-            polish=False,
-            atol=1e-3,
-            tol=1e-3
-        )
-        
-        print(f"\n✅ Optimization completed!")
-        print(f"Best score: {result.fun:.4f}")
-        print(f"Total evaluations: {self.evaluation_count}")
-        
-        return result
-    
-    def optimize_random_search(self, max_evaluations=500):
-        """随机搜索优化"""
-        print("Random Search optimization")
-        
-        bounds = self._get_bounds_vector()
-        
-        # 重置计数器
-        self.evaluation_count = 0
-        self.best_score = float('inf')
-        self.best_params = None
-        
-        for i in range(max_evaluations):
-            # 生成随机参数
-            x = np.array([
-                np.random.uniform(bound[0], bound[1]) 
-                for bound in bounds
-            ])
-            
-            # 评估参数
-            self.objective_function(x)
-        
-        print(f"\n✅Random search completed!")
-        print(f"Best score: {self.best_score:.4f}")
-        print(f"Total evaluations: {self.evaluation_count}")
-
-    def optimize_bayesian(self, max_evaluations=500, acquisition_function='LCB'):
-        from skopt import gp_minimize, forest_minimize, gbrt_minimize
-        from skopt.space import Real
-        from skopt.utils import use_named_args
-        from skopt.acquisition import gaussian_ei, gaussian_pi, gaussian_lcb
-        
-        print("Bayesian optimization")
-        print(f"Max evaluations: {max_evaluations}")
-        print(f"Acquisition function: {acquisition_function}")
-                
-            
-        # 定义搜索空间
-        dimensions = []
-        param_names = []
-
-        for param_group in ['pos_p', 'pos_i', 'pos_d', 'att_p', 'att_i', 'att_d']:
-            for i, bound in enumerate(self.param_bounds[param_group]):
-                dimensions.append(Real(bound[0], bound[1], name=f'{param_group}_{i}'))
-                param_names.append(f'{param_group}_{i}')
-        
-        print(f"🔍 Search space: {len(dimensions)} dimensions")
-        for i, dim in enumerate(dimensions):
-            print(f"  {param_names[i]}: [{dim.low:.4f}, {dim.high:.4f}]")
-        
-        # 定义目标函数（使用装饰器自动处理参数）
-        @use_named_args(dimensions)
-        def bayesian_objective(**params):
-            """贝叶斯优化的目标函数"""
-            # 将命名参数转换为向量
-            x = []
-            for name in param_names:
-                x.append(params[name])
-            
-            return self.objective_function(np.array(x))
-        # 重置计数器
-        self.evaluation_count = 0
-        self.best_score = float('inf')
-        self.best_params = None
-        
-        # 选择采集函数
-        acq_func_map = {
-            'EI': 'EI',      # Expected Improvement
-            'PI': 'PI',      # Probability of Improvement  
-            'LCB': 'LCB',    # Lower Confidence Bound
-            'gp_hedge': 'gp_hedge'  # 自动选择最佳采集函数
-        }
-        
-        acq_func_name = acq_func_map.get(acquisition_function, 'EI')
+        self.evaluation_history = []
         
         try:
-            # 运行贝叶斯优化
-            result = gp_minimize(
-                func=bayesian_objective,
-                dimensions=dimensions,
-                n_calls=max_evaluations,
-                n_initial_points=max(5, max_evaluations // 5),  # 初始随机点数
-                acq_func=acq_func_name,
-                n_jobs=1,  # 串行执行以避免仿真冲突
-                random_state=42,
-                verbose=True,
-                noise=1e-10  # 添加小量噪声处理数值稳定性
+            result = differential_evolution(
+                func=self.objective_function,
+                bounds=bounds,
+                maxiter=max_evaluations // population_size,
+                popsize=population_size,
+                seed=42,
+                disp=True,
+                polish=False,
+                atol=1e-3,
+                tol=1e-3
             )
             
-            print(f"\n✅Bayesian optimization completed!")
-            print(f"Best score: {result.fun:.4f}")
-            print(f"Total evaluations: {self.evaluation_count}")
-            print(f"Convergence: {len(result.func_vals)} function evaluations")
+            print(f"\n🎉 Optimization completed!")
+            print(f"🏆 Best score: {result.fun:.4f}")
+            print(f"📈 Total evaluations: {self.evaluation_count}")
             
-            # 显示收敛历史
-            print(f"\nConvergence history (last 5):")
-            for i, score in enumerate(result.func_vals[-5:]):
-                print(f"  Eval {len(result.func_vals)-4+i}: {score:.4f}")
+            # 保存最终结果
+            self._save_optimization_results(result)
             
             return result
+            
         except Exception as e:
-            print(f"❌ Bayesian optimization failed: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ Optimization failed: {e}")
             return None
+    
+    def _save_best_params_to_json(self):
+        """保存最佳参数到JSON文件"""
+        if self.best_params is None:
+            return
+            
+        try:
+            # 创建Best_PID_Params文件夹
+            best_params_dir = os.path.join(
+                os.path.dirname(__file__), 
+                'Best_PID_Params'
+            )
+            os.makedirs(best_params_dir, exist_ok=True)
+            
+            # 保存到best_pid_params.json
+            best_params_file = os.path.join(best_params_dir, 'best_pid_params.json')
+            
+            # 准备保存的数据 - 只包含必要的PID参数，不包含时间戳
+            save_data = {
+                'name': f'Optimized_{self.task_type}_PID',
+                'task_type': self.task_type,
+                'drone_model': self.drone_model.name,
+                'optimization_score': self.best_score,
+                'evaluation_count': self.evaluation_count,
+                'pos_p': self.best_params['pos_p'],
+                'pos_i': self.best_params['pos_i'],
+                'pos_d': self.best_params['pos_d'],
+                'att_p': self.best_params['att_p'],
+                'att_i': self.best_params['att_i'],
+                'att_d': self.best_params['att_d']
+            }
+            
+            with open(best_params_file, 'w', encoding='utf-8') as f:
+                json.dump(save_data, f, indent=2, ensure_ascii=False)
+            
+            print(f"💾 Best parameters saved to: {best_params_file}")
+            
+        except Exception as e:
+            print(f"❌ Failed to save best parameters: {e}")
+    
+    def _save_optimization_results(self, result):
+        """保存完整的优化结果"""
+        try:
+            # 创建结果文件夹
+            results_dir = os.path.join(os.path.dirname(__file__), 'tuning_results')
+            os.makedirs(results_dir, exist_ok=True)
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            results_file = os.path.join(results_dir, f'pid_tuning_results_{timestamp}.json')
+            
+            # 准备完整结果数据
+            results_data = {
+                'task_type': self.task_type,
+                'drone_model': self.drone_model.name,
+                'optimization_method': 'differential_evolution',
+                'best_score': self.best_score,
+                'best_params': self.best_params,
+                'total_evaluations': self.evaluation_count,
+                'optimization_weights': self.weights,
+                'search_bounds': self.param_bounds,
+                'evaluation_history': self.evaluation_history[-10:],  # 只保存最后10次评估
+                'scipy_result': {
+                    'success': result.success,
+                    'message': result.message,
+                    'fun': result.fun,
+                    'nfev': result.nfev
+                } if result else None,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            with open(results_file, 'w', encoding='utf-8') as f:
+                json.dump(results_data, f, indent=2, ensure_ascii=False)
+            
+            print(f"📁 Full results saved to: {results_file}")
+            
+        except Exception as e:
+            print(f"❌ Failed to save optimization results: {e}")
+    
+    def plot_optimization_history(self):
+        """绘制优化历史"""
+        if not self.evaluation_history:
+            print("❌ No optimization history to plot")
+            return
+            
+        try:
+            # 提取数据
+            evaluations = [h['evaluation'] for h in self.evaluation_history]
+            scores = [h['score'] for h in self.evaluation_history]
+            
+            # 创建图表
+            plt.figure(figsize=(12, 8))
+            
+            # 主图：总分变化
+            plt.subplot(2, 2, 1)
+            plt.plot(evaluations, scores, 'b-', alpha=0.7, label='Scores')
+            plt.axhline(y=self.best_score, color='r', linestyle='--', label=f'Best: {self.best_score:.4f}')
+            plt.xlabel('Evaluation')
+            plt.ylabel('Score')
+            plt.title('Optimization Progress')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            
+            # 子图：详细指标变化
+            detailed_metrics = ['stability', 'tracking_error', 'overshoot', 'energy_efficiency']
+            
+            for i, metric in enumerate(detailed_metrics, 2):
+                plt.subplot(2, 2, i)
+                metric_values = []
+                for h in self.evaluation_history:
+                    if 'detailed_scores' in h and metric in h['detailed_scores']:
+                        metric_values.append(h['detailed_scores'][metric])
+                    else:
+                        metric_values.append(np.nan)
+                
+                plt.plot(evaluations[:len(metric_values)], metric_values, 'g-', alpha=0.7)
+                plt.xlabel('Evaluation')
+                plt.ylabel(metric.replace('_', ' ').title())
+                plt.title(f'{metric.replace("_", " ").title()} Progress')
+                plt.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            
+            # 保存图表
+            plots_dir = os.path.join(os.path.dirname(__file__), 'tuning_plots')
+            os.makedirs(plots_dir, exist_ok=True)
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            plot_file = os.path.join(plots_dir, f'pid_tuning_history_{timestamp}.png')
+            
+            plt.savefig(plot_file, dpi=300, bbox_inches='tight')
+            print(f"📊 Optimization history plot saved to: {plot_file}")
+            
+            plt.show()
+            
+        except Exception as e:
+            print(f"❌ Failed to plot optimization history: {e}")
 
 def main():
-    tuner = PIDTuner()
+    """主函数"""
+    parser = argparse.ArgumentParser(description='PID Parameter Tuner')
+    parser.add_argument('--task', default='hover', choices=['hover', 'tracking', 'aggressive'], 
+                       help='Task type for optimization')
+    parser.add_argument('--drone', default='cf2p', choices=['cf2x', 'cf2p'], 
+                       help='Drone model')
+    parser.add_argument('--max_eval', default=60, type=int, 
+                       help='Maximum number of evaluations')
+    parser.add_argument('--population', default=10, type=int, 
+                       help='Population size for differential evolution')
+    parser.add_argument('--plot', action='store_true', 
+                       help='Plot optimization history')
+    parser.add_argument('--max_tilt_angle_deg', default=25, type=float,
+                       help='Maximum tilt angle in degrees (default: 25)')
+    parser.add_argument('--max_motor_output_pct', default=80, type=float,
+                       help='Maximum motor output percentage (default: 80)')
     
-    # 选择优化方法
-    print("Select an optimizer:")
-    print("1. Genetic Algorithm")
-    print("2. Random Search")
-    print("3. Bayesian Optimization")
+    args = parser.parse_args()
     
-    choice = input("Select(1-3): ").strip()
+    # 设置无人机模型
+    drone_model = DroneModel.CF2P if args.drone == 'cf2p' else DroneModel.CF2X
     
-    try:
-        if choice == "1":
-            result = tuner.optimize_genetic_algorithm(max_evaluations=12, population_size=4)
-        elif choice == "2":
-            tuner.optimize_random_search(max_evaluations=20)
-        elif choice == "3":
-            result = tuner.optimize_bayesian(max_evaluations=20, acquisition_function='LCB')
-
-        # 保存结果
+    print("🎯 PID Parameter Tuner")
+    print("=" * 50)
+    print(f"Task: {args.task}")
+    print(f"Drone: {drone_model.name}")
+    print(f"Max evaluations: {args.max_eval}")
+    print(f"Population size: {args.population}")
+    print(f"🛡️ Max tilt angle: {args.max_tilt_angle_deg}°")
+    print(f"🛡️ Max motor output: {args.max_motor_output_pct}%")
+    print("=" * 50)
+    
+    # 创建调优器
+    tuner = PIDTuner(
+        task_type=args.task, 
+        drone_model=drone_model,
+        max_tilt_angle_deg=args.max_tilt_angle_deg,
+        max_motor_output_pct=args.max_motor_output_pct
+    )
+    
+    # 运行优化
+    result = tuner.optimize_differential_evolution(
+        max_evaluations=args.max_eval,
+        population_size=args.population
+    )
+    
+    if result and result.success:
+        print("\n🎉 Optimization successful!")
+        print(f"🏆 Best parameters saved as best_pid_params.json")
+        print(f"📊 Best score: {tuner.best_score:.4f}")
+        
         if tuner.best_params:
-            print(f"\nBest Parameters:")
-            print(f"Position P={tuner.best_params['pos_p']}")
-            print(f"Position I={tuner.best_params['pos_i']}")
-            print(f"Position D={tuner.best_params['pos_d']}")
-            print(f"Attitude P={tuner.best_params['att_p']}")
-            print(f"Attitude I={tuner.best_params['att_i']}")
-            print(f"Attitude D={tuner.best_params['att_d']}")
-            
-            # 保存到文件
-            with open("best_pid_params.json", "w") as f:
-                json.dump({
-                    'best_score': tuner.best_score,
-                    'best_params': tuner.best_params,
-                    'timestamp': datetime.now().isoformat()
-                }, f, indent=2)
-            print("Result is saved as best_pid_params.json")
-            
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
+            print("\n📋 Best Parameters:")
+            for key, value in tuner.best_params.items():
+                if key != 'name':
+                    print(f"  {key}: {value}")
+    else:
+        print("\n❌ Optimization failed or interrupted")
+    
+    # 绘制优化历史
+    if args.plot:
+        tuner.plot_optimization_history()
 
 if __name__ == "__main__":
     main()

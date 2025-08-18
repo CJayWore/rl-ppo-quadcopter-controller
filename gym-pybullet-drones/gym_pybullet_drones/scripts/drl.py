@@ -13,9 +13,6 @@ Usage Examples:
     # Training
     python drl.py --task unified --train_mode True --episodes 1000 --enable_obstacles False
     
-    # Evaluation  
-    python drl.py --task unified --train_mode False --gui True --enable_obstacles False
-    
     # Continue training
     python drl.py --task unified --train_mode True --load_model results/unified/best_model.zip --enable_obstacles False --episodes 10000
 ------------------------------------------------------------------------------------------------------------
@@ -23,14 +20,8 @@ Usage Examples:
     # Training
     python drl.py --task unified --train_mode True --episodes 1000
     
-    # Evaluation  
-    python drl.py --task unified --train_mode False --gui True --duration_sec 180
-    
     # Continue training
     python drl.py --task unified --train_mode True --load_model results/unified/best_model.zip --episodes 10000
-    
-    # List available models
-    python drl.py --list_models
 
 -------------------------------------------------------------------------------------------------------------
     # Enable Gaussian noise
@@ -39,14 +30,9 @@ Usage Examples:
     -- noise_decay True/False (default: True)
 
 -------------------------------------------------------------------------------------------------------------
-    # Performance Evaluation
-    python drl.py --performance_eval --eval_episodes 100
     
-    # Evaluate specific model with comprehensive metrics
-    python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 100
-    
-    # Evaluation with GUI visualization (slower but visual)
-    python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 20 --gui True
+    # Evaluation
+    python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 1000 --gui False --generate_latex True
     
     # Detailed evaluation with custom duration and LaTeX output
     python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 50 --eval_duration 180 --generate_latex True
