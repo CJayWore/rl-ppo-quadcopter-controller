@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """
 PID Controller Performance Evaluation Module
 
@@ -130,6 +130,7 @@ class PIDPerformanceEvaluator:
         self.metrics = PIDPerformanceMetrics()
         self.episode_data = []
         self.current_episode = {}
+        self.current_safety_events = []  # Track safety events for current episode
         
         # Target position for task completion evaluation (matching PPO version)
         self.target_position = np.array([3, 3, 1.5])  # Default target matching DRLAviary
@@ -228,6 +229,56 @@ class PIDPerformanceEvaluator:
         elif not within_tolerance:
             # Reset hover timer if we move out of tolerance
             self.hover_start_time = None
+        
+        # Check for safety events (matching PPO version)
+        safety_events = []
+        
+        # Check for large position deviation
+        if position_error > 2.0:  # Large deviation
+            safety_events.append({
+                'type': 'large_deviation',
+                'timestamp': timestamp,
+                'error': position_error
+            })
+        
+        # Check for large attitude angles
+        # Convert quaternion to euler angles for attitude check
+        from scipy.spatial.transform import Rotation
+        try:
+            rotation = Rotation.from_quat(quat)
+            euler_angles = rotation.as_euler('xyz', degrees=False)
+            
+            if np.any(np.abs(euler_angles) > np.pi/3):  # Large attitude angle (60 degrees)
+                safety_events.append({
+                    'type': 'attitude_violation',
+                    'timestamp': timestamp,
+                    'attitude': euler_angles.copy()
+                })
+        except:
+            # Fallback for invalid quaternions
+            pass
+        
+        # Check for low altitude (crash detection)
+        if pos[2] < 0.1:  # Below 10cm altitude
+            safety_events.append({
+                'type': 'low_altitude',
+                'timestamp': timestamp,
+                'altitude': pos[2]
+            })
+        
+        # Check for excessive velocity
+        velocity_norm = np.linalg.norm(vel)
+        if velocity_norm > 5.0:  # > 5 m/s
+            safety_events.append({
+                'type': 'excessive_velocity',
+                'timestamp': timestamp,
+                'velocity': velocity_norm
+            })
+        
+        # Store safety events for this step (will be aggregated in end_episode)
+        if not hasattr(self, 'current_safety_events'):
+            self.current_safety_events = []
+        self.current_safety_events.extend(safety_events)
     
     def end_episode(self, termination_reason: str, hover_success: bool = None) -> None:
         """End current episode and compute episode metrics."""
@@ -248,9 +299,16 @@ class PIDPerformanceEvaluator:
         
         # Store episode data
         self.episode_data.append(self.current_episode.copy())
-        self.current_episode = {}
         
         print(f"Episode {self.episode_count} completed: {termination_reason}")
+        if 'final_error' in self.current_episode:
+            print(f"   Final error: {self.current_episode['final_error']:.3f}m")
+        if 'mean_error' in self.current_episode:
+            print(f"   Mean error: {self.current_episode['mean_error']:.3f}m")
+        if 'safety_events_count' in self.current_episode:
+            print(f"   Safety events: {self.current_episode['safety_events_count']}")
+        
+        self.current_episode = {}
     
     def _compute_episode_metrics(self) -> None:
         """Compute performance metrics for the current episode - aligned with PPO version."""
@@ -272,10 +330,13 @@ class PIDPerformanceEvaluator:
             control_energy = np.sum(np.sum(motor_commands**2, axis=1))
             self.metrics.control_energy.append(control_energy)
         
-        # Control smoothness (derivative of motor commands)
+        # Control smoothness (derivative of motor commands) - matching PPO version
         if len(motor_commands) > 1:
             motor_derivatives = np.diff(motor_commands, axis=0)
-            smoothness = 1.0 / (1.0 + np.mean(np.sum(motor_derivatives**2, axis=1)))
+            # Calculate RMS of motor command changes (matching PPO calculation for RPM)
+            rms_motor_change = np.sqrt(np.mean(motor_derivatives**2))
+            # Convert to smoothness score (0-1, higher = smoother) - matching PPO normalization
+            smoothness = 1.0 / (1.0 + rms_motor_change / 1000.0)  # Normalize by typical motor command change
             self.metrics.control_smoothness.append(smoothness)
         
         # Attitude stability (variance in orientation)
@@ -349,9 +410,28 @@ class PIDPerformanceEvaluator:
             steady_error = np.mean(position_errors[steady_start:])
             self.metrics.steady_state_errors.append(steady_error)
         
-        # Safety events (placeholder - could be enhanced with actual safety checks)
-        safety_events_count = 0  # Implement actual safety event detection if needed
+        # Safety events (matching PPO version)
+        if hasattr(self, 'current_safety_events'):
+            self.metrics.safety_events.extend(self.current_safety_events)
+            safety_events_count = len(self.current_safety_events)
+            self.current_safety_events = []  # Reset for next episode
+        else:
+            safety_events_count = 0
+        
         self.current_episode['safety_events_count'] = safety_events_count
+        
+        # Store position errors for this episode (for per-episode analysis)
+        self.current_episode['errors'] = position_errors
+        
+        # Store episode-level error statistics (matching PPO version)
+        if len(position_errors) > 0:
+            self.current_episode['mean_error'] = np.mean(position_errors)
+            self.current_episode['final_error'] = position_errors[-1]
+            self.current_episode['max_error'] = np.max(position_errors)
+        else:
+            self.current_episode['mean_error'] = float('inf')
+            self.current_episode['final_error'] = float('inf')
+            self.current_episode['max_error'] = float('inf')
     
     def finalize_evaluation(self) -> Dict:
         """Finalize evaluation and compute summary statistics."""
@@ -403,9 +483,10 @@ class PIDPerformanceEvaluator:
             crashed_episodes = sum(1 for ep in self.episode_data 
                                  if ep['termination_reason'] == 'crash')
             
-            self.metrics.task_completion_rate = successful_episodes / total_episodes * 100
-            self.metrics.hover_success_rate = hover_successful / total_episodes * 100
-            self.metrics.crash_rate = crashed_episodes / total_episodes * 100
+            # Task success rates (matching PPO version - use ratios, not percentages)
+            self.metrics.task_completion_rate = successful_episodes / total_episodes  # 0.0-1.0 ratio
+            self.metrics.hover_success_rate = hover_successful / total_episodes      # 0.0-1.0 ratio  
+            self.metrics.crash_rate = crashed_episodes / total_episodes             # 0.0-1.0 ratio
         
             # Average hover time (only for successful episodes)
             if hover_successful > 0:
@@ -450,14 +531,52 @@ class PIDPerformanceEvaluator:
         fig = plt.figure(figsize=(20, 12))
         gs = GridSpec(3, 3, hspace=0.3, wspace=0.3)
         
-        # 1. Position Error Time Series
+        # 1. Position Error Time Series - Optimized for large datasets
         ax1 = fig.add_subplot(gs[0, 0])
         if len(self.metrics.position_errors) > 0:
-            ax1.plot(self.metrics.position_errors, 'b-', alpha=0.7, linewidth=1)
+            errors = np.array(self.metrics.position_errors)
+            # Intelligent downsampling for readability
+            max_points = 5000  # Limit for subplot visualization
+            if len(errors) > max_points:
+                # Use systematic downsampling
+                indices = np.linspace(0, len(errors)-1, max_points, dtype=int)
+                x_vals = indices
+                y_vals = errors[indices]
+            else:
+                x_vals = np.arange(len(errors))
+                y_vals = errors
+            
+            # Plot downsampled data
+            ax1.plot(x_vals, y_vals, 'b-', alpha=0.7, linewidth=1, label='Position Error')
+            
+            # Add moving average trend if we have enough data
+            if len(errors) > 100:
+                window_size = min(1000, len(errors)//100)
+                # Compute moving average on original data first
+                from scipy.ndimage import uniform_filter1d
+                moving_avg = uniform_filter1d(errors, size=window_size, mode='nearest')
+                # Then downsample the moving average
+                if len(errors) > max_points:
+                    trend_y = moving_avg[indices]
+                else:
+                    trend_y = moving_avg
+                ax1.plot(x_vals, trend_y, 'orange', linewidth=2, alpha=0.8, label='Trend')
+                ax1.legend()
+            
             ax1.axhline(y=self.target_tolerance, color='r', linestyle='--', label='Target Tolerance')
             ax1.set_title('Position Error Over Time', fontsize=12, fontweight='bold')
             ax1.set_xlabel('Step')
             ax1.set_ylabel('Position Error (m)')
+            
+            # Add statistics text box
+            mean_error = np.mean(errors)
+            std_error = np.std(errors)
+            max_error = np.max(errors)
+            p95_error = np.percentile(errors, 95)
+            ax1.text(0.02, 0.98, f'Mean: {mean_error:.3f}m\nStd: {std_error:.3f}m\nMax: {max_error:.3f}m\n95%: {p95_error:.3f}m\nSamples: {len(errors):,}',
+                    transform=ax1.transAxes, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            
             ax1.legend()
             ax1.grid(True, alpha=0.3)
         
@@ -562,7 +681,7 @@ class PIDPerformanceEvaluator:
         
         # Normalize metrics to 0-1 scale
         metrics_values = []
-        metrics_values.append(self.metrics.task_completion_rate / 100.0)  # Task completion
+        metrics_values.append(self.metrics.task_completion_rate)  # Task completion (already 0-1 ratio)
         
         # Position accuracy: Use inverse RMSE with better normalization
         if self.metrics.rmse_position > 0:
@@ -648,17 +767,91 @@ class PIDPerformanceEvaluator:
         """
         print("Saving individual performance plots...")
         
-        # 1. Position Error Time Series
+        # 1. Position Error Time Series - Optimized for large datasets
         if len(self.metrics.position_errors) > 0:
-            fig1 = plt.figure(figsize=(10, 6))
-            ax = fig1.add_subplot(111)
-            ax.plot(self.metrics.position_errors, 'b-', alpha=0.7, linewidth=1)
-            ax.axhline(y=self.target_tolerance, color='r', linestyle='--', label='Target Tolerance')
-            ax.set_title('PID Position Error Over Time', fontsize=14, fontweight='bold')
-            ax.set_xlabel('Step')
-            ax.set_ylabel('Position Error (m)')
-            ax.legend()
-            ax.grid(True, alpha=0.3)
+            fig1 = plt.figure(figsize=(12, 8))
+            
+            # Create two subplots: one for downsampled full series, one for per-episode stats
+            gs = fig1.add_gridspec(2, 1, height_ratios=[2, 1], hspace=0.3)
+            
+            # Top subplot: Downsampled time series for overview
+            ax1 = fig1.add_subplot(gs[0])
+            errors_array = np.array(self.metrics.position_errors)
+            
+            # Intelligent downsampling based on data size
+            max_points = 10000  # Maximum points to plot for readability
+            if len(errors_array) > max_points:
+                # Use systematic downsampling to maintain data distribution
+                downsample_factor = len(errors_array) // max_points
+                downsampled_errors = errors_array[::downsample_factor]
+                downsampled_steps = np.arange(0, len(errors_array), downsample_factor)
+                
+                # Also add moving average for trend visualization
+                window_size = min(1000, len(errors_array) // 100)
+                if window_size > 1:
+                    # Calculate moving average with larger window
+                    moving_avg = np.convolve(errors_array, np.ones(window_size)/window_size, mode='same')
+                    avg_steps = np.arange(0, len(errors_array), downsample_factor*5)  # Less dense for moving average
+                    avg_values = moving_avg[::downsample_factor*5]
+                    
+                    ax1.plot(avg_steps, avg_values, 'r-', alpha=0.8, linewidth=2, label='Moving Average')
+                
+                ax1.plot(downsampled_steps, downsampled_errors, 'b-', alpha=0.6, linewidth=0.5, label=f'Downsampled Data (1/{downsample_factor})')
+                ax1.text(0.02, 0.98, f'Showing {len(downsampled_errors):,} of {len(errors_array):,} points', 
+                        transform=ax1.transAxes, verticalalignment='top',
+                        bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
+            else:
+                # For smaller datasets, show all points
+                ax1.plot(errors_array, 'b-', alpha=0.7, linewidth=1, label='Position Error')
+            
+            ax1.axhline(y=self.target_tolerance, color='r', linestyle='--', alpha=0.8, label='Target Tolerance')
+            ax1.set_title('Position Error Over Time (Overview)', fontsize=14, fontweight='bold')
+            ax1.set_xlabel('Step')
+            ax1.set_ylabel('Position Error (m)')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Add statistics text box - moved to left bottom to avoid legend overlap
+            stats_text = f'Mean: {np.mean(errors_array):.3f}m\n'
+            stats_text += f'Std: {np.std(errors_array):.3f}m\n'
+            stats_text += f'Max: {np.max(errors_array):.3f}m\n'
+            stats_text += f'95%ile: {np.percentile(errors_array, 95):.3f}m'
+            ax1.text(0.02, 0.02, stats_text, transform=ax1.transAxes, 
+                    verticalalignment='bottom', horizontalalignment='left',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            
+            # Bottom subplot: Per-episode error statistics
+            ax2 = fig1.add_subplot(gs[1])
+            if hasattr(self, 'episode_data') and len(self.episode_data) > 0:
+                episode_errors = []
+                episode_numbers = []
+                for i, episode in enumerate(self.episode_data):
+                    if 'mean_error' in episode:
+                        episode_errors.append(episode['mean_error'])
+                        episode_numbers.append(i + 1)
+                
+                if episode_errors:
+                    ax2.plot(episode_numbers, episode_errors, 'go-', markersize=4, linewidth=1, alpha=0.7)
+                    ax2.axhline(y=self.target_tolerance, color='r', linestyle='--', alpha=0.8)
+                    ax2.set_title('Mean Error per Episode', fontsize=12, fontweight='bold')
+                    ax2.set_xlabel('Episode')
+                    ax2.set_ylabel('Mean Error (m)')
+                    ax2.grid(True, alpha=0.3)
+                    
+                    # Add trend line if enough episodes
+                    if len(episode_errors) > 5:
+                        z = np.polyfit(episode_numbers, episode_errors, 1)
+                        p = np.poly1d(z)
+                        ax2.plot(episode_numbers, p(episode_numbers), "r--", alpha=0.5, 
+                                label=f'Trend (slope: {z[0]:.4f})')
+                        ax2.legend()
+                else:
+                    ax2.text(0.5, 0.5, 'No episode error data available', 
+                            transform=ax2.transAxes, ha='center', va='center')
+            else:
+                ax2.text(0.5, 0.5, 'No episode data available', 
+                        transform=ax2.transAxes, ha='center', va='center')
+            
             fig1.savefig(os.path.join(self.output_folder, "01_position_error_time_series_PID.png"), 
                         dpi=300, bbox_inches='tight')
             plt.close(fig1)
@@ -932,9 +1125,9 @@ class PIDPerformanceEvaluator:
             "",
             "## Summary Statistics",
             f"- **Episodes Evaluated**: {len(self.episode_data)}",
-            f"- **Task Completion Rate**: {self.metrics.task_completion_rate:.1f}%",
-            f"- **Hover Success Rate**: {self.metrics.hover_success_rate:.1f}%",
-            f"- **Crash Rate**: {self.metrics.crash_rate:.1f}%",
+            f"- **Task Completion Rate**: {self.metrics.task_completion_rate:.1%}",  # Format as percentage
+            f"- **Hover Success Rate**: {self.metrics.hover_success_rate:.1%}",      # Format as percentage
+            f"- **Crash Rate**: {self.metrics.crash_rate:.1%}",                     # Format as percentage
             "",
             "## Position Control Performance",
             f"- **RMSE Position Error**: {self.metrics.rmse_position:.4f} m",
@@ -1017,9 +1210,9 @@ class PIDPerformanceEvaluator:
 \\textbf{{Metric}} & \\textbf{{Value}} \\\\
 \\hline
 Episodes Evaluated & {len(self.episode_data)} \\\\
-Task Completion Rate & {self.metrics.task_completion_rate:.1f}\\% \\\\
-Hover Success Rate & {self.metrics.hover_success_rate:.1f}\\% \\\\
-Crash Rate & {self.metrics.crash_rate:.1f}\\% \\\\
+Task Completion Rate & {self.metrics.task_completion_rate:.1%} \\\\
+Hover Success Rate & {self.metrics.hover_success_rate:.1%} \\\\
+Crash Rate & {self.metrics.crash_rate:.1%} \\\\
 \\hline
 RMSE Position Error & {self.metrics.rmse_position:.4f} m \\\\
 Mean Absolute Error & {self.metrics.mae_position:.4f} m \\\\

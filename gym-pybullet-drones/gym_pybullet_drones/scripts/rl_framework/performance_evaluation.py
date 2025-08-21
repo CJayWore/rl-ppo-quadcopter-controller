@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
 """
 Drone Performance Evaluation Module
-
-This module provides comprehensive performance evaluation capabilities for drone RL models,
-including data collection, analysis, and visualization of key performance metrics.
-Uses Logger.py data structure for consistent data collection while providing advanced visualization.
-
-Author: GitHub Copilot Assistant
-Date: August 12, 2025
 """
 
 import os
@@ -892,15 +885,35 @@ class DronePerformanceLogger(Logger):
         fig = plt.figure(figsize=(20, 12))
         gs = GridSpec(3, 3, hspace=0.3, wspace=0.3)
         
-        # 1. Position Error Time Series
+        # 1. Position Error Time Series (Optimized)
         ax1 = fig.add_subplot(gs[0, 0])
         if len(self.metrics.position_errors) > 0:
-            ax1.plot(self.metrics.position_errors, 'b-', alpha=0.7, linewidth=1)
-            ax1.axhline(y=self.target_tolerance, color='r', linestyle='--', label='Target Tolerance')
+            errors_array = np.array(self.metrics.position_errors)
+            
+            # Smart downsampling for overview plot
+            max_points = 5000  # Fewer points for subplot
+            if len(errors_array) > max_points:
+                downsample_factor = len(errors_array) // max_points
+                downsampled_errors = errors_array[::downsample_factor]
+                downsampled_steps = np.arange(0, len(errors_array), downsample_factor)
+                
+                # Add moving average for trend
+                window_size = min(500, len(errors_array) // 50)
+                if window_size > 1:
+                    moving_avg = np.convolve(errors_array, np.ones(window_size)/window_size, mode='same')
+                    avg_steps = np.arange(0, len(errors_array), downsample_factor*2)
+                    avg_values = moving_avg[::downsample_factor*2]
+                    ax1.plot(avg_steps, avg_values, 'r-', alpha=0.7, linewidth=1.5, label='Moving Avg')
+                
+                ax1.plot(downsampled_steps, downsampled_errors, 'b-', alpha=0.5, linewidth=0.5, label='Data')
+            else:
+                ax1.plot(errors_array, 'b-', alpha=0.7, linewidth=1, label='Position Error')
+            
+            ax1.axhline(y=self.target_tolerance, color='r', linestyle='--', alpha=0.8, label='Target')
             ax1.set_title('Position Error Over Time', fontsize=12, fontweight='bold')
             ax1.set_xlabel('Step')
             ax1.set_ylabel('Position Error (m)')
-            ax1.legend()
+            ax1.legend(fontsize=8)
             ax1.grid(True, alpha=0.3)
         
         # 2. Error Distribution Histogram
@@ -1088,17 +1101,91 @@ class DronePerformanceLogger(Logger):
         """
         print("Saving individual performance plots...")
         
-        # 1. Position Error Time Series
+        # 1. Position Error Time Series - Optimized for large datasets
         if len(self.metrics.position_errors) > 0:
-            fig1 = plt.figure(figsize=(10, 6))
-            ax = fig1.add_subplot(111)
-            ax.plot(self.metrics.position_errors, 'b-', alpha=0.7, linewidth=1)
-            ax.axhline(y=self.target_tolerance, color='r', linestyle='--', label='Target Tolerance')
-            ax.set_title('Position Error Over Time', fontsize=14, fontweight='bold')
-            ax.set_xlabel('Step')
-            ax.set_ylabel('Position Error (m)')
-            ax.legend()
-            ax.grid(True, alpha=0.3)
+            fig1 = plt.figure(figsize=(12, 8))
+            
+            # Create two subplots: one for downsampled full series, one for per-episode stats
+            gs = fig1.add_gridspec(2, 1, height_ratios=[2, 1], hspace=0.3)
+            
+            # Top subplot: Downsampled time series for overview
+            ax1 = fig1.add_subplot(gs[0])
+            errors_array = np.array(self.metrics.position_errors)
+            
+            # Intelligent downsampling based on data size
+            max_points = 10000  # Maximum points to plot for readability
+            if len(errors_array) > max_points:
+                # Use systematic downsampling to maintain data distribution
+                downsample_factor = len(errors_array) // max_points
+                downsampled_errors = errors_array[::downsample_factor]
+                downsampled_steps = np.arange(0, len(errors_array), downsample_factor)
+                
+                # Also add moving average for trend visualization
+                window_size = min(1000, len(errors_array) // 100)
+                if window_size > 1:
+                    # Calculate moving average with larger window
+                    moving_avg = np.convolve(errors_array, np.ones(window_size)/window_size, mode='same')
+                    avg_steps = np.arange(0, len(errors_array), downsample_factor*5)  # Less dense for moving average
+                    avg_values = moving_avg[::downsample_factor*5]
+                    
+                    ax1.plot(avg_steps, avg_values, 'r-', alpha=0.8, linewidth=2, label='Moving Average')
+                
+                ax1.plot(downsampled_steps, downsampled_errors, 'b-', alpha=0.6, linewidth=0.5, label=f'Downsampled Data (1/{downsample_factor})')
+                ax1.text(0.02, 0.98, f'Showing {len(downsampled_errors):,} of {len(errors_array):,} points', 
+                        transform=ax1.transAxes, verticalalignment='top',
+                        bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
+            else:
+                # For smaller datasets, show all points
+                ax1.plot(errors_array, 'b-', alpha=0.7, linewidth=1, label='Position Error')
+            
+            ax1.axhline(y=self.target_tolerance, color='r', linestyle='--', alpha=0.8, label='Target Tolerance')
+            ax1.set_title('Position Error Over Time (Overview)', fontsize=14, fontweight='bold')
+            ax1.set_xlabel('Step')
+            ax1.set_ylabel('Position Error (m)')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Add statistics text box - moved to left bottom to avoid legend overlap
+            stats_text = f'Mean: {np.mean(errors_array):.3f}m\n'
+            stats_text += f'Std: {np.std(errors_array):.3f}m\n'
+            stats_text += f'Max: {np.max(errors_array):.3f}m\n'
+            stats_text += f'95%ile: {np.percentile(errors_array, 95):.3f}m'
+            ax1.text(0.02, 0.02, stats_text, transform=ax1.transAxes, 
+                    verticalalignment='bottom', horizontalalignment='left',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            
+            # Bottom subplot: Per-episode error statistics
+            ax2 = fig1.add_subplot(gs[1])
+            if hasattr(self, 'episode_data') and len(self.episode_data) > 0:
+                episode_errors = []
+                episode_numbers = []
+                for i, episode in enumerate(self.episode_data):
+                    if 'mean_error' in episode:
+                        episode_errors.append(episode['mean_error'])
+                        episode_numbers.append(i + 1)
+                
+                if episode_errors:
+                    ax2.plot(episode_numbers, episode_errors, 'go-', markersize=4, linewidth=1, alpha=0.7)
+                    ax2.axhline(y=self.target_tolerance, color='r', linestyle='--', alpha=0.8)
+                    ax2.set_title('Mean Error per Episode', fontsize=12, fontweight='bold')
+                    ax2.set_xlabel('Episode')
+                    ax2.set_ylabel('Mean Error (m)')
+                    ax2.grid(True, alpha=0.3)
+                    
+                    # Add trend line if enough episodes
+                    if len(episode_errors) > 5:
+                        z = np.polyfit(episode_numbers, episode_errors, 1)
+                        p = np.poly1d(z)
+                        ax2.plot(episode_numbers, p(episode_numbers), "r--", alpha=0.5, 
+                                label=f'Trend (slope: {z[0]:.4f})')
+                        ax2.legend()
+                else:
+                    ax2.text(0.5, 0.5, 'No episode error data available', 
+                            transform=ax2.transAxes, ha='center', va='center')
+            else:
+                ax2.text(0.5, 0.5, 'No episode data available', 
+                        transform=ax2.transAxes, ha='center', va='center')
+            
             fig1.savefig(os.path.join(self.performance_dir, "01_position_error_time_series.png"), 
                         dpi=300, bbox_inches='tight')
             plt.close(fig1)

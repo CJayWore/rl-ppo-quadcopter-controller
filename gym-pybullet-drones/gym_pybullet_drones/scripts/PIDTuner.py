@@ -358,7 +358,7 @@ class PIDTuner:
             bounds.extend(self.param_bounds[key])
         return bounds
     
-    def optimize_differential_evolution(self, max_evaluations=1000, population_size=10):
+    def optimize_differential_evolution(self, max_evaluations=1, population_size=1):
         """
         Optimize PID parameters using differential evolution algorithm.
         
@@ -380,27 +380,42 @@ class PIDTuner:
         self.best_params = None
         self.evaluation_history = []
         
+        # Calculate maxiter safely to avoid infinite loops
+        maxiter = max(1, max_evaluations // population_size)
+        print(f"Calculated maxiter: {maxiter}")
+        
         try:
             result = differential_evolution(
                 func=self.objective_function,
                 bounds=bounds,
-                maxiter=max_evaluations // population_size,
+                maxiter=maxiter,
                 popsize=population_size,
                 seed=42,
                 disp=True,
                 polish=False,
                 atol=1e-3,
-                tol=1e-3
+                tol=1e-3,
+                workers=1,  # Use single worker to avoid potential issues
+                updating='immediate'  # Use immediate updating strategy
             )
             
             print(f"\nOptimization completed!")
             print(f"Best score: {result.fun:.4f}")
             print(f"Total evaluations: {self.evaluation_count}")
+            print(f"Optimization success: {result.success}")
+            print(f"Optimization message: {result.message}")
             
             self._save_optimization_results(result)
             
             return result
             
+        except KeyboardInterrupt:
+            print(f"\n⚠️  Optimization interrupted by user!")
+            print(f"Evaluations completed: {self.evaluation_count}")
+            if self.best_params:
+                print(f"Best score so far: {self.best_score:.4f}")
+                self._save_best_params_to_json()
+            return None
         except Exception as e:
             print(f"Optimization failed: {e}")
             return None

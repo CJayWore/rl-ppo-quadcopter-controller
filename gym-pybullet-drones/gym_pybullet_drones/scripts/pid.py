@@ -22,6 +22,8 @@ The control is given by the PID implementation in `DSLPIDControl`.
 
 Usage Command:
     python pid.py --max_episodes 1000 --episode_timeout_sec 8 --target_hover_time 5.0 --gui False --randomize_positions True --use_best_params True --plot False --enable_performance_eval True
+    --enable_noise True --noise_level heavy
+    python pid.py --max_episodes 10 --episode_timeout_sec 8 --target_hover_time 5.0 --gui True --randomize_positions True --use_best_params True --plot False --enable_performance_eval True
 
 Features:
     - Multi-drone simulation with independent PID controllers
@@ -328,17 +330,17 @@ def generate_episode_positions(num_drones, randomize_positions):
         for i in range(num_drones):
             # Very close start position for gentle startup
             start_pos = np.array([
-                np.random.uniform(-0.2, 0.2),  # Even smaller range
-                np.random.uniform(-0.2, 0.2),
-                np.random.uniform(1.0, 1.2)    # Higher start altitude
+                np.random.uniform(-0.5, 0.5),  # Even smaller range
+                np.random.uniform(-0.5, 0.5),
+                np.random.uniform(0.8, 1.2)    # Higher start altitude
             ])
             
             # Closer target position for stable PID behavior
             while True:
                 target_pos = np.array([
-                    np.random.uniform(0.3, 0.8),   # Smaller target range
-                    np.random.uniform(0.3, 0.8),
-                    np.random.uniform(1.0, 1.4)    # Conservative altitude range
+                    np.random.uniform(2.0, 4.0),
+                    np.random.uniform(2.0, 4.0),
+                    np.random.uniform(0.5, 2.0)
                 ])
                 # Minimum distance reduced for stability
                 if np.linalg.norm(target_pos - start_pos) > 0.5:
