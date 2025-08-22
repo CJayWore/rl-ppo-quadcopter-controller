@@ -23,7 +23,7 @@ The control is given by the PID implementation in `DSLPIDControl`.
 Usage Command:
     python pid.py --max_episodes 1000 --episode_timeout_sec 8 --target_hover_time 5.0 --gui False --randomize_positions True --use_best_params True --plot False --enable_performance_eval True
     --enable_noise True --noise_level heavy
-    python pid.py --max_episodes 10 --episode_timeout_sec 8 --target_hover_time 5.0 --gui True --randomize_positions True --use_best_params True --plot False --enable_performance_eval True
+    python pid.py --max_episodes 10 --episode_timeout_sec 8 --target_hover_time 5.0 --gui False --randomize_positions True --use_best_params True --plot False --enable_performance_eval True
 
 Features:
     - Multi-drone simulation with independent PID controllers
@@ -57,8 +57,11 @@ from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 from gym_pybullet_drones.utils.Logger import Logger
 from gym_pybullet_drones.utils.utils import sync, str2bool
-from pid_performance_evaluation import PIDPerformanceEvaluator
-from scripts.rl_framework.gaussian_noise import GaussianNoiseManager, create_light_noise_manager, create_heavy_noise_manager, NoiseType
+
+# Import performance evaluation from current directory
+sys.path.append(os.path.join(os.path.dirname(__file__), 'rl_framework'))
+from performance_evaluation import DronePerformanceLogger
+from gaussian_noise import GaussianNoiseManager, create_light_noise_manager, create_heavy_noise_manager, NoiseType
 
 
 DEFAULT_DRONES = DroneModel("cf2p")
@@ -471,13 +474,20 @@ def run(
     #### Initialize performance evaluator (if enabled) ######
     performance_evaluator = None
     if enable_performance_eval:
-        perf_output = performance_output_folder if performance_output_folder else os.path.join(output_folder, "performance_analysis")
-        performance_evaluator = PIDPerformanceEvaluator(output_folder=perf_output)
-        print(f"Stats: Performance evaluation enabled - output: {perf_output}")
+        # DronePerformanceLogger will create a 'performance_analysis' subdirectory
+        # So we pass the base output_folder directly to avoid double nesting
+        perf_output = performance_output_folder if performance_output_folder else output_folder
+        performance_evaluator = DronePerformanceLogger(
+            output_folder=perf_output, 
+            logging_freq=control_freq_hz,
+            num_drones=num_drones,
+            duration_sec=episode_timeout_sec
+        )
+        print(f"Stats: Performance evaluation enabled - output: {performance_evaluator.performance_dir}")
         
-        # Start evaluation session
+        # Set target position for evaluation
         target_pos_for_eval = TARGET_POS_ARRAY[0] if len(TARGET_POS_ARRAY) > 0 else np.array([1.5, 1.5, 1.2])
-        performance_evaluator.start_evaluation(target_pos_for_eval)
+        performance_evaluator.target_position = target_pos_for_eval
     elif enable_performance_eval:
         print("Warning:  Performance evaluation requested but not available")
     
@@ -656,12 +666,24 @@ def run(
             
             # Log performance data (if evaluator is enabled)
             if performance_evaluator:
-                performance_evaluator.log_step(
+                # Create reward and info dictionaries for compatibility
+                reward = 1.0 if hover_duration > 0 else 0.0  # Simple reward based on hover
+                info_dict = {'target_pos': TARGET_POS_ARRAY[0]}
+                
+                # Create 12-dimensional control array (pos_x_target, pos_y_target, pos_z_target, vel_x_target, vel_y_target, vel_z_target,
+                # roll_target, pitch_target, yaw_target, p_roll_target, p_pitch_target, p_yaw_target)
+                control_12d = np.zeros(12)
+                control_12d[0:3] = TARGET_POS_ARRAY[0]  # Position targets
+                # Leave velocity, attitude, and angular velocity targets as zeros
+                
+                performance_evaluator.log_step_with_performance(
+                    drone=0,
                     timestamp=current_time,
                     state=obs[0],  # First drone
-                    target_pos=TARGET_POS_ARRAY[0],
-                    motor_commands=action[0],
-                    hover_duration=hover_duration
+                    action=action[0],  # Motor commands as action
+                    reward=reward,
+                    info=info_dict,
+                    control=control_12d  # 12-dimensional control array
                 )
 
             #### Log the simulation ####################################
@@ -684,8 +706,7 @@ def run(
         
         # End performance evaluation episode
         if performance_evaluator:
-            hover_success = (termination_reason == "success")
-            performance_evaluator.end_episode(termination_reason, hover_success)
+            performance_evaluator.end_episode(drone_id=0)
         
         episode_data.append({
             'episode': total_episodes + 1,
@@ -741,8 +762,19 @@ def run(
     #### Finalize performance evaluation ####################
     if performance_evaluator:
         print(f"\nStats: Finalizing performance evaluation...")
-        performance_results = performance_evaluator.finalize_evaluation()
+        
+        # Generate performance visualizations
+        performance_evaluator.visualize_performance(save_plots=True)
+        
+        # Generate performance report
+        report_file = performance_evaluator.generate_performance_report()
+        
+        # Save performance data
+        performance_evaluator.save_performance_data(comment="pid_performance_eval")
+        
         print(f"Target: Performance evaluation completed!")
+        print(f"   Report saved to: {report_file}")
+        print(f"   Data saved to: {performance_evaluator.performance_dir}")
     
     #### Save the simulation results ###########################
     logger.save()

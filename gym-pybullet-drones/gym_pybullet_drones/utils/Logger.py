@@ -142,7 +142,9 @@ class Logger(object):
         csv_dir = os.path.join(self.OUTPUT_FOLDER, "save-flight-"+comment+"-"+datetime.now().strftime("%m.%d.%Y_%H.%M.%S"))
         if not os.path.exists(csv_dir):
             os.makedirs(csv_dir+'/')
-        t = np.arange(0, self.timestamps.shape[1]/self.LOGGING_FREQ_HZ, 1/self.LOGGING_FREQ_HZ)
+        # Ensure time array matches state data length
+        actual_length = self.states.shape[2]
+        t = np.arange(0, actual_length/self.LOGGING_FREQ_HZ, 1/self.LOGGING_FREQ_HZ)[:actual_length]
         for i in range(self.NUM_DRONES):
             with open(csv_dir+"/x"+str(i)+".csv", 'wb') as out_file:
                 np.savetxt(out_file, np.transpose(np.vstack([t, self.states[i, 0, :]])), delimiter=",")
