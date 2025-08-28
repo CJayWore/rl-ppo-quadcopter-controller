@@ -4,9 +4,13 @@ examples/debug.py
 examples/test.py
 
 # NumPy saves and videos
+pid_results/*
 results/*
 !results/unified
 tmp/
+*.npy
+*.json
+*.csv
 
 # Learning results
 experiments/learning/results/save-*
