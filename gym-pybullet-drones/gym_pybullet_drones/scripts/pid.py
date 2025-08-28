@@ -20,11 +20,16 @@ https://github.com/utiasDSL/gym-pybullet-drones/blob/main/gym_pybullet_drones/ex
 The simulation is run by a `CtrlAviary` environment.
 The control is given by the PID implementation in `DSLPIDControl`.
 
-Usage Command:
-    python pid.py --max_episodes 1000 --episode_timeout_sec 8 --target_hover_time 5.0 --gui False --randomize_positions True --use_best_params True --plot False --enable_performance_eval True
-    --enable_noise True --noise_level heavy
-    python pid.py --max_episodes 10 --episode_timeout_sec 8 --target_hover_time 5.0 --gui False --randomize_positions True --use_best_params True --plot False --enable_performance_eval True
+python pid.py --max_episodes 1000 --episode_timeout_sec 8 --target_hover_time 5.0 --gui False --randomize_positions True --use_best_params True --plot False --enable_performance_eval True
+mv pid_results/performance_analysis pid_results/performance_PID_noNoise
+python pid.py --max_episodes 1000 --episode_timeout_sec 8 --target_hover_time 5.0 --gui False --randomize_positions True --use_best_params True --plot False --enable_performance_eval True --enable_noise True --noise_level medium
+mv pid_results/performance_analysis pid_results/performance_PID_withNoise
 
+Usage Command:
+    python pid.py --max_episodes 1000 --episode_timeout_sec 8 --target_hover_time 5.0 --gui False --randomize_positions True --use_best_params True --plot False --enable_performance_eval True --enable_noise True --noise_level heavy
+    
+    python pid.py --max_episodes 100 --episode_timeout_sec 8 --target_hover_time 5.0 --gui False --randomize_positions True --use_best_params True --plot False --enable_performance_eval True
+    mv pid_results/performance_analysis pid_results/performance_PID_noNoise
 Features:
     - Multi-drone simulation with independent PID controllers
     - Hovering at randomized target positions

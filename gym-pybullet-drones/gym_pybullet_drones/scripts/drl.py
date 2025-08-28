@@ -13,6 +13,11 @@ Usage Examples:
     
     Evaluation:
         python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 1000 --gui False --generate_latex True
+        mv results/performance_analysis results/performance_PPO_noNoise
+        python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 1000 --gui False --generate_latex True --enable_noise True --noise_level medium
+        mv results/performance_analysis results/performance_PPO_withNoise
+
+        python drl.py --performance_eval --evaluate_model results/unified/best_model.zip --eval_episodes 100 --gui False --generate_latex True
     
     With Gaussian Noise:
         python drl.py --task unified --train_mode True --enable_noise True --noise_level medium

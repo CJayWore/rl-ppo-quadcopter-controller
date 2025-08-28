@@ -358,7 +358,7 @@ class PIDTuner:
             bounds.extend(self.param_bounds[key])
         return bounds
     
-    def optimize_differential_evolution(self, max_evaluations=1, population_size=1):
+    def optimize_differential_evolution(self, max_evaluations=100, population_size=10):
         """
         Optimize PID parameters using differential evolution algorithm.
         
