@@ -12,6 +12,7 @@ from gym_pybullet_drones.utils.enums import ActionType
 
 from .config import EnvironmentConfig, TrainingConfig
 
+from gym_pybullet_drones.envs.AirSimEnv import AirSimEnv
 
 class EnvironmentFactory:
     """Factory for creating different types of environments."""
@@ -39,8 +40,10 @@ class EnvironmentFactory:
         # 现在只支持 unified 任务
         if task == "unified":
             return DRLAviary(**kwargs)
+        elif task == "airsim":
+            return AirSimEnv()
         else:
-            raise ValueError(f"Unknown task: {task}. Only 'unified' task is supported.")
+            raise ValueError(f"Unknown task: {task}.")
     
     @classmethod
     def get_env_kwargs(cls, task: str, config: EnvironmentConfig, training_config: TrainingConfig) -> Dict[str, Any]:
@@ -64,6 +67,8 @@ class EnvironmentFactory:
                 'enable_obstacles': training_config.enable_obstacles
             }
             base_kwargs.update(unified_kwargs)
+        elif task == "airsim":
+            return{} # 参数都在 AirSimEnv 内部初始化了，传空字典即可
         else:
             raise ValueError(f"Unknown task: {task}. Only 'unified' task is supported.")
         
@@ -72,7 +77,7 @@ class EnvironmentFactory:
     @classmethod
     def get_network_config(cls, task: str) -> Dict[str, Any]:
         """Get network configuration based on task complexity."""
-        if task == "unified":
+        if task in ["unified", "airsim"]:
             return cls.NETWORK_CONFIGS["complex"]
         else:
             raise ValueError(f"Unknown task: {task}. Only 'unified' task is supported.")

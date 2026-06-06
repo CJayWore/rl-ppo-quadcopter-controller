@@ -17,7 +17,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     
     # Task parameters
     parser.add_argument('--task', default='unified', type=str,
-                       choices=['unified'],  # 只支持 unified 任务
+                       choices=['unified', 'airsim'],  # 只支持 unified 任务
                        help='Task to train/evaluate (default: unified, only unified supported)')
     parser.add_argument('--trajectory_type', default='circle', type=str,
                        choices=['circle', 'figure8', 'waypoints'],
